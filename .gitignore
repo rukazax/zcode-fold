@@ -1,0 +1,15 @@
+# Node
+backend/node_modules/
+backend/tools/
+backend/.token
+backend/*.log
+
+# Flutter
+app/.dart_tool/
+app/build/
+app/.flutter-plugins-dependencies
+app/android/.gradle/
+app/android/local.properties
+
+# Research scratch
+.research/
