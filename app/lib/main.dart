@@ -56,7 +56,7 @@ class _ZCodeFoldAppState extends State<ZCodeFoldApp> with WidgetsBindingObserver
       home: AnimatedBuilder(
         animation: widget.state,
         builder: (context, _) {
-          if (widget.state.activeProfile == null) {
+          if (widget.state.activeDevice == null) {
             return ConnectPage(state: widget.state);
           }
           return HomePage(state: widget.state);

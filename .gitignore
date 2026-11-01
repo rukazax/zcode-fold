@@ -1,8 +1,3 @@
-# Node
-backend/node_modules/
-backend/tools/
-backend/.token
-backend/*.log
 
 # Flutter
 app/.dart_tool/

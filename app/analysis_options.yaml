@@ -13,6 +13,9 @@ analyzer:
   exclude:
     - build/**
     - android/**
+    # Vendored ZCode Remote protocol (MIT, see THIRD_PARTY.md) — kept close
+    # to upstream so it can be diffed against the reference implementation.
+    - lib/src/zcode/**
 
 linter:
   # The lint rules applied to this project can be customized in the

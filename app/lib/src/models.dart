@@ -1,268 +1,116 @@
 import 'package:flutter/material.dart';
 
-/// A saved hub connection.
-class ServerProfile {
-  ServerProfile({
-    required this.id,
-    required this.name,
-    required this.hubUrl,
-    required this.token,
-  });
+/// A saved ZCode desktop pairing (the QR/link from the desktop app).
+class SavedDevice {
+  SavedDevice({required this.id, required this.name, required this.url});
 
   final String id;
   String name;
-  String hubUrl;
-  String token;
+  String url;
 
-  Map<String, dynamic> toJson({bool withToken = true}) => {
-        'id': id,
-        'name': name,
-        'hubUrl': hubUrl,
-        if (withToken) 'token': token,
-      };
+  Map<String, dynamic> toJson() => {'id': id, 'name': name};
 
-  static ServerProfile fromJson(Map<String, dynamic> json, {String token = ''}) {
-    return ServerProfile(
-      id: json['id'] as String? ?? DateTime.now().microsecondsSinceEpoch.toString(),
-      name: json['name'] as String? ?? 'hub',
-      hubUrl: json['hubUrl'] as String? ?? '',
-      token: token.isNotEmpty ? token : (json['token'] as String? ?? ''),
-    );
-  }
+  static SavedDevice fromJson(Map<String, dynamic> json, {String url = ''}) =>
+      SavedDevice(
+        id: json['id'] as String? ??
+            DateTime.now().microsecondsSinceEpoch.toString(),
+        name: json['name'] as String? ?? 'ZCode',
+        url: url,
+      );
 }
 
-class HubSessionInfo {
-  HubSessionInfo({required this.sessionId, this.title, this.status, this.updatedAt});
+/// One live session row from the desktop's sessions index.
+class SessionSummary {
+  SessionSummary({
+    required this.sessionId,
+    required this.title,
+    required this.phase,
+    this.preview,
+    this.updatedAt = 0,
+    this.hasBackgroundWork = false,
+  });
 
   final String sessionId;
-  final String? title;
-  final String? status;
-  final int? updatedAt;
-
-  bool get running => status == 'running';
-
-  static HubSessionInfo fromJson(Map<String, dynamic> json) => HubSessionInfo(
-        sessionId: json['sessionId'] as String? ?? '',
-        title: json['title'] as String?,
-        status: json['status'] as String?,
-        updatedAt: (json['updatedAt'] as num?)?.toInt(),
-      );
-}
-
-class HubInstance {
-  HubInstance({
-    required this.id,
-    this.workspace,
-    this.origin,
-    this.sessions = const [],
-  });
-
-  final String id;
-  final String? workspace;
-  final String? origin;
-  final List<HubSessionInfo> sessions;
-
-  String get workspaceName {
-    final w = workspace ?? '';
-    final parts = w.split(RegExp(r'[\\/]')).where((p) => p.isNotEmpty).toList();
-    return parts.isEmpty ? (w.isEmpty ? 'workspace' : w) : parts.last;
-  }
-
-  static HubInstance fromJson(Map<String, dynamic> json) => HubInstance(
-        id: json['id'] as String? ?? '',
-        workspace: json['workspace'] as String?,
-        origin: json['origin'] as String?,
-        sessions: (json['sessions'] as List<dynamic>? ?? [])
-            .whereType<Map<String, dynamic>>()
-            .map(HubSessionInfo.fromJson)
-            .toList(),
-      );
-}
-
-class ConfigOptionValue {
-  ConfigOptionValue({required this.value, required this.name});
-  final String value;
-  final String name;
-}
-
-class ConfigOption {
-  ConfigOption({
-    required this.id,
-    this.name,
-    this.currentValue,
-    this.options = const [],
-  });
-  final String id;
-  final String? name;
-  String? currentValue;
-  final List<ConfigOptionValue> options;
-
-  String displayValue() {
-    final v = currentValue;
-    if (v == null) return '';
-    for (final o in options) {
-      if (o.value == v) return o.name;
-    }
-    final tail = v.split(RegExp(r'[\\/]')).last;
-    return tail;
-  }
-
-  static ConfigOption fromJson(Map<String, dynamic> json) => ConfigOption(
-        id: json['id'] as String? ?? '',
-        name: json['name'] as String?,
-        currentValue: json['currentValue'] as String?,
-        options: (json['options'] as List<dynamic>? ?? [])
-            .whereType<Map<String, dynamic>>()
-            .map((o) => ConfigOptionValue(
-                  value: o['value'] as String? ?? '',
-                  name: o['name'] as String? ?? (o['value'] as String? ?? ''),
-                ))
-            .toList(),
-      );
-}
-
-class UsageInfo {
-  UsageInfo(this.used, this.size);
-  final int used;
-  final int size;
-  double get fraction => size <= 0 ? 0 : (used / size).clamp(0.0, 1.0);
-}
-
-class PermissionOption {
-  PermissionOption({required this.id, required this.name, this.kind});
-  final String id;
-  final String name;
-  final String? kind;
-}
-
-class PendingPermission {
-  PendingPermission({
-    required this.requestId,
-    required this.title,
-    this.detail,
-    required this.options,
-  });
-  final int requestId;
   final String title;
-  final String? detail;
-  final List<PermissionOption> options;
-}
+  final String phase;
+  final String? preview;
+  final int updatedAt;
+  final bool hasBackgroundWork;
 
-class ToolCallData {
-  ToolCallData({
-    required this.id,
-    required this.title,
-    this.kind,
-    this.status = 'in_progress',
-    this.text = '',
-    this.rawInput,
-  });
+  bool get running => phase == 'running' || phase == 'prewarming';
+  bool get failed => phase == 'error';
 
-  final String id;
-  String title;
-  String? kind;
-  String status;
-  String text;
-  dynamic rawInput;
+  String get displayTitle {
+    final t = title.trim();
+    if (t.isNotEmpty) return t;
+    final p = preview?.trim();
+    if (p != null && p.isNotEmpty) return p;
+    return 'Без названия';
+  }
 
-  bool get failed => status == 'failed';
-  bool get done => status == 'completed';
-}
-
-class ChatPart {
-  ChatPart.text(this.text) : type = 'text', tool = null;
-  ChatPart.thought(this.text) : type = 'thought', tool = null;
-  ChatPart.tool(this.tool)
-      : type = 'tool',
-        text = '';
-
-  final String type;
-  String text;
-  ToolCallData? tool;
-}
-
-class ChatMessage {
-  ChatMessage({required this.id, required this.role, List<ChatPart>? parts})
-      : parts = parts ?? [];
-
-  final String id;
-  final String role; // user | assistant
-  final List<ChatPart> parts;
-  bool collapsed = false;
-  DateTime createdAt = DateTime.now();
-
-  bool get isUser => role == 'user';
-
-  String get plainText => parts
-      .where((p) => p.type == 'text')
-      .map((p) => p.text)
-      .join()
-      .trim();
-}
-
-class SlashCommand {
-  SlashCommand({required this.name, this.description});
-  final String name;
-  final String? description;
-
-  static SlashCommand fromJson(Map<String, dynamic> json) => SlashCommand(
-        name: json['name'] as String? ?? '',
-        description: json['description'] as String?,
+  static SessionSummary fromMap(Map<String, dynamic> raw) => SessionSummary(
+        sessionId: '${raw['sessionId'] ?? ''}',
+        title: '${raw['title'] ?? ''}',
+        phase: '${raw['phase'] ?? ''}',
+        preview: raw['lastAssistantPreview'] as String?,
+        updatedAt: (raw['lastActivityAt'] as num?)?.toInt() ?? 0,
+        hasBackgroundWork: raw['hasBackgroundWork'] == true,
       );
 }
 
-class PlanEntry {
-  PlanEntry({required this.content, required this.status, this.priority});
-  final String content;
-  final String status;
-  final String? priority;
-}
-
-/// Helpers shared by the UI.
-String humanBytes(int n) {
+String humanTokens(int n) {
   if (n < 1000) return '$n';
-  if (n < 1000 * 1000) return '${(n / 1000).toStringAsFixed(1)}k';
+  if (n < 1000000) return '${(n / 1000).toStringAsFixed(1)}k';
   return '${(n / 1000000).toStringAsFixed(1)}M';
 }
 
-String formatTime(int? epochMs) {
-  if (epochMs == null) return '';
+String formatTime(int epochMs) {
+  if (epochMs <= 0) return '';
   final d = DateTime.fromMillisecondsSinceEpoch(epochMs);
   final now = DateTime.now();
-  if (now.difference(d).inDays == 0) {
+  final sameDay = now.year == d.year && now.month == d.month && now.day == d.day;
+  if (sameDay) {
     return '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
   }
   return '${d.day.toString().padLeft(2, '0')}.${d.month.toString().padLeft(2, '0')}';
 }
 
-IconData iconForKind(String? kind) {
-  switch (kind) {
-    case 'execute':
-      return Icons.terminal_rounded;
-    case 'edit':
-      return Icons.edit_note_rounded;
-    case 'read':
-      return Icons.description_outlined;
-    case 'search':
-      return Icons.search_rounded;
-    case 'fetch':
-      return Icons.cloud_download_outlined;
-    case 'switch_mode':
-      return Icons.swap_horiz_rounded;
-    default:
-      return Icons.build_circle_outlined;
+IconData iconForTool(String name) {
+  final n = name.toLowerCase();
+  if (n.contains('bash') || n.contains('shell') || n.contains('exec')) {
+    return Icons.terminal_rounded;
   }
+  if (n.contains('edit') || n.contains('write') || n.contains('patch')) {
+    return Icons.edit_note_rounded;
+  }
+  if (n.contains('read') || n.contains('view')) {
+    return Icons.description_outlined;
+  }
+  if (n.contains('grep') || n.contains('search') || n.contains('glob')) {
+    return Icons.search_rounded;
+  }
+  if (n.contains('fetch') || n.contains('web')) {
+    return Icons.cloud_download_outlined;
+  }
+  if (n.contains('agent') || n.contains('task')) {
+    return Icons.hub_outlined;
+  }
+  return Icons.build_circle_outlined;
 }
 
-Color colorForStatus(String status, ColorScheme scheme) {
+Color toolStatusColor(String status) {
   switch (status) {
-    case 'completed':
+    case 'success':
       return const Color(0xFF5DD9A0);
-    case 'failed':
-      return scheme.error;
-    case 'pending':
+    case 'error':
+      return const Color(0xFFFF7B72);
+    case 'cancelled':
       return const Color(0xFFE3B341);
-    default:
+    case 'running':
+    case 'inputStreaming':
+    case 'pendingApproval':
       return const Color(0xFF7AA7FF);
+    default:
+      return const Color(0xFF8B95A3);
   }
 }

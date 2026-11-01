@@ -19,7 +19,7 @@ class HomePage extends StatelessWidget {
       builder: (context, _) {
         final fold = FoldInfo.of(context);
         final wide = fold.isUnfolded;
-        final hasSession = state.hasSession;
+        final open = state.hasOpenChat;
 
         if (wide) {
           final leftWidth = fold.hasVerticalHinge
@@ -34,8 +34,8 @@ class HomePage extends StatelessWidget {
                     width: leftWidth,
                     child: SessionsPane(
                       state: state,
-                      onOpen: state.openSession,
-                      onNew: state.newSession,
+                      onOpen: (s) => state.openSession(s.sessionId, title: s.title),
+                      onNew: state.startDraft,
                       onSettings: () => _showSettings(context),
                     ),
                   ),
@@ -44,13 +44,13 @@ class HomePage extends StatelessWidget {
                     color: hinge > 0 ? kBg : kBorder,
                   ),
                   Expanded(
-                    child: hasSession
+                    child: open
                         ? ChatPane(
                             state: state,
-                            onBack: state.closeSession,
+                            onBack: state.closeChat,
                             onSettings: () => _showSettings(context),
                           )
-                        : _placeholder(context),
+                        : _placeholder(),
                   ),
                 ],
               ),
@@ -62,18 +62,18 @@ class HomePage extends StatelessWidget {
           body: SafeArea(
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 180),
-              child: hasSession
+              child: open
                   ? ChatPane(
                       key: const ValueKey('chat'),
                       state: state,
-                      onBack: state.closeSession,
+                      onBack: state.closeChat,
                       onSettings: () => _showSettings(context),
                     )
                   : SessionsPane(
                       key: const ValueKey('list'),
                       state: state,
-                      onOpen: state.openSession,
-                      onNew: state.newSession,
+                      onOpen: (s) => state.openSession(s.sessionId, title: s.title),
+                      onNew: state.startDraft,
                       onSettings: () => _showSettings(context),
                     ),
             ),
@@ -83,7 +83,7 @@ class HomePage extends StatelessWidget {
     );
   }
 
-  Widget _placeholder(BuildContext context) {
+  Widget _placeholder() {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -94,7 +94,8 @@ class HomePage extends StatelessWidget {
           const Text('Выбери сессию слева',
               style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
           const SizedBox(height: 6),
-          const Text('Экран разложен — работаем в две колонки',
+          const Text('Или начни новую — экран разложен, работаем в две колонки',
+              textAlign: TextAlign.center,
               style: TextStyle(color: kMuted, fontSize: 12.5)),
         ],
       ),
@@ -128,24 +129,30 @@ class HomePage extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  const Text('Подключения',
+                  const Text('Компьютеры',
                       style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
                   const SizedBox(height: 10),
-                  for (final profile in state.profiles)
+                  for (final device in state.devices)
                     ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: Icon(
-                        profile.id == state.activeProfile?.id
+                        device.id == state.activeDevice?.id
                             ? Icons.radio_button_checked
                             : Icons.radio_button_unchecked,
-                        color: profile.id == state.activeProfile?.id ? kAccent : kMuted,
+                        color: device.id == state.activeDevice?.id
+                            ? kAccent
+                            : kMuted,
                         size: 20,
                       ),
-                      title: Text(profile.name, style: const TextStyle(fontSize: 14)),
-                      subtitle: Text(profile.hubUrl,
+                      title: Text(device.name, style: const TextStyle(fontSize: 14)),
+                      subtitle: Text(_host(device.url),
                           style: const TextStyle(color: kMuted, fontSize: 11.5)),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete_outline, size: 18, color: kMuted),
+                        onPressed: () => state.removeDevice(device),
+                      ),
                       onTap: () {
-                        state.selectProfile(profile);
+                        state.selectDevice(device);
                         Navigator.of(sheetContext).pop();
                       },
                     ),
@@ -158,7 +165,7 @@ class HomePage extends StatelessWidget {
                       ));
                     },
                     icon: const Icon(Icons.add_rounded, size: 18),
-                    label: const Text('Добавить подключение'),
+                    label: const Text('Подключить компьютер'),
                   ),
                   const Divider(height: 28),
                   const Text('Экран',
@@ -170,18 +177,27 @@ class HomePage extends StatelessWidget {
                     '${fold.isUnfolded ? 'две колонки' : 'одна колонка'}',
                     style: const TextStyle(color: kMuted, fontSize: 12, height: 1.5),
                   ),
+                  const SizedBox(height: 14),
+                  Text(
+                    'Проект: ${state.workspace == null ? '—' : AppState.workspaceTitle(state.workspace!)}',
+                    style: const TextStyle(color: kMuted, fontSize: 12),
+                  ),
+                  Text(
+                    'Связь: ${state.relayState.name}',
+                    style: const TextStyle(color: kMuted, fontSize: 12),
+                  ),
                   const SizedBox(height: 16),
                   OutlinedButton.icon(
                     onPressed: () {
-                      state.closeSession();
+                      state.disconnect();
                       Navigator.of(sheetContext).pop();
                     },
                     icon: const Icon(Icons.link_off_rounded, size: 18),
-                    label: const Text('Отключиться от сессии'),
+                    label: const Text('Отключиться'),
                   ),
                   const SizedBox(height: 8),
                   const Center(
-                    child: Text('ZCode Fold 0.1.0 · ACP over WebSocket',
+                    child: Text('ZCode Fold 0.2.0 · прямое подключение ZCode Remote',
                         style: TextStyle(color: kMuted, fontSize: 10.5)),
                   ),
                 ],
@@ -191,5 +207,12 @@ class HomePage extends StatelessWidget {
         },
       ),
     );
+  }
+
+  String _host(String url) {
+    final parsed = Uri.tryParse(url);
+    if (parsed == null) return url;
+    final name = parsed.queryParameters['name'] ?? parsed.queryParameters['mid'];
+    return name != null ? '$name · ${parsed.host}' : parsed.host;
   }
 }

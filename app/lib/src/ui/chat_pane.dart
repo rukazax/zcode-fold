@@ -1,10 +1,9 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../models.dart';
+import '../zcode/conversation.dart' show ConfigOption, ConversationState;
 import 'theme.dart';
 
 class ChatPane extends StatefulWidget {
@@ -27,8 +26,7 @@ class _ChatPaneState extends State<ChatPane> {
   final _scroll = ScrollController();
   final _input = TextEditingController();
   final _focus = FocusNode();
-  bool _userAtBottom = true;
-  String? _lastSessionId;
+  bool _atBottom = true;
 
   @override
   void initState() {
@@ -36,9 +34,8 @@ class _ChatPaneState extends State<ChatPane> {
     widget.state.addListener(_onState);
     _scroll.addListener(() {
       if (!_scroll.hasClients) return;
-      _userAtBottom = _scroll.position.maxScrollExtent - _scroll.offset < 120;
+      _atBottom = _scroll.position.maxScrollExtent - _scroll.offset < 140;
     });
-    _loadDraft();
   }
 
   @override
@@ -50,35 +47,21 @@ class _ChatPaneState extends State<ChatPane> {
     super.dispose();
   }
 
-  void _loadDraft() {
-    final draft = widget.state.draftFor(widget.state.sessionId);
-    if (draft != null) _input.text = draft;
-  }
-
   void _onState() {
     if (!mounted) return;
-    if (_lastSessionId != widget.state.sessionId) {
-      _lastSessionId = widget.state.sessionId;
-      _input.clear();
-      _loadDraft();
-    }
-    final error = widget.state.takeLastError();
+    final error = widget.state.takeError();
     if (error != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(error), duration: const Duration(seconds: 3)),
+          SnackBar(content: Text(error), duration: const Duration(seconds: 4)),
         );
       });
     }
-    if (_userAtBottom) {
+    if (_atBottom) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!_scroll.hasClients) return;
-        _scroll.animateTo(
-          _scroll.position.maxScrollExtent + 400,
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOut,
-        );
+        _scroll.jumpTo(_scroll.position.maxScrollExtent);
       });
     }
     setState(() {});
@@ -86,25 +69,61 @@ class _ChatPaneState extends State<ChatPane> {
 
   Future<void> _send() async {
     final text = _input.text;
-    if (text.trim().isEmpty) return;
+    if (text.trim().isEmpty || widget.state.sending) return;
     _input.clear();
-    await widget.state.saveDraft(widget.state.sessionId, '');
     await widget.state.send(text);
-    _userAtBottom = true;
+    _atBottom = true;
+    _focus.requestFocus();
   }
 
   @override
   Widget build(BuildContext context) {
     final state = widget.state;
+    final rows = state.conversation?.rows ?? const <Map<String, dynamic>>[];
+    final interactions = state.conversation?.pendingInteractions ??
+        const <Map<String, dynamic>>[];
     return Column(
       children: [
         _header(context),
-        if (!state.connected && state.hasSession) _reconnectBanner(),
+        if (!state.connected && !state.connecting)
+          Container(
+            width: double.infinity,
+            color: const Color(0xFF231D10),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+            child: const Text(
+              'Связь с компьютером потеряна — жду переподключения. '
+              'Проверь, что ZCode открыт и мобильный доступ включён.',
+              style: TextStyle(color: Color(0xFFE3B341), fontSize: 11.5),
+            ),
+          ),
         Expanded(
-          child: state.messages.isEmpty ? _empty(context) : _messageList(context),
+          child: state.openingSession && rows.isEmpty
+              ? const Center(
+                  child: SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: kAccent),
+                  ),
+                )
+              : rows.isEmpty
+                  ? _empty(context)
+                  : ListView(
+                      controller: _scroll,
+                      padding: const EdgeInsets.fromLTRB(14, 14, 14, 18),
+                      children: [
+                        if (state.conversation?.canLoadOlder == true)
+                          Center(
+                            child: TextButton.icon(
+                              onPressed: state.loadOlder,
+                              icon: const Icon(Icons.history_rounded, size: 16),
+                              label: const Text('Загрузить раньше'),
+                            ),
+                          ),
+                        ..._buildRows(context, rows),
+                      ],
+                    ),
         ),
-        if (state.plan.isNotEmpty) _planBar(context),
-        if (state.permission != null) _permissionCard(context),
+        if (interactions.isNotEmpty) _interactions(context, interactions),
         _composer(context),
       ],
     );
@@ -112,8 +131,10 @@ class _ChatPaneState extends State<ChatPane> {
 
   Widget _header(BuildContext context) {
     final state = widget.state;
+    final conn = state.conversation;
+    final usage = _usage(state);
     return Container(
-      padding: const EdgeInsets.fromLTRB(6, 8, 8, 8),
+      padding: const EdgeInsets.fromLTRB(4, 6, 8, 6),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: kBorder)),
       ),
@@ -129,9 +150,7 @@ class _ChatPaneState extends State<ChatPane> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  state.sessionTitle?.trim().isNotEmpty == true
-                      ? state.sessionTitle!
-                      : 'Сессия',
+                  _title(state),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14.5),
@@ -148,29 +167,25 @@ class _ChatPaneState extends State<ChatPane> {
                   const SizedBox(width: 6),
                   Flexible(
                     child: Text(
-                      state.connected
-                          ? (state.running ? 'модель пишет…' : 'на связи')
-                          : 'переподключение…',
+                      conn?.isRunning == true
+                          ? 'модель работает…'
+                          : (state.connected ? 'на связи' : 'нет связи'),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(color: kMuted, fontSize: 11),
                     ),
                   ),
-                  if (state.workspaceLabel.isNotEmpty) ...[
-                    const Text(' · ', style: TextStyle(color: kMuted, fontSize: 11)),
-                    Flexible(
-                      child: Text(state.workspaceLabel,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: kMuted, fontSize: 11)),
-                    ),
-                  ],
                 ]),
               ],
             ),
           ),
-          ..._configChips(context),
-          if (state.usage != null) _usageChip(state.usage!),
+          if (conn != null && state.prep != null)
+            _configChip(
+              context,
+              label: _currentModelLabel(state, conn),
+              onTap: () => _showConfig(context),
+            ),
+          if (usage != null) _usageChip(usage),
           IconButton(
             onPressed: widget.onSettings,
             icon: const Icon(Icons.tune_rounded, size: 20, color: kMuted),
@@ -181,59 +196,59 @@ class _ChatPaneState extends State<ChatPane> {
     );
   }
 
-  List<Widget> _configChips(BuildContext context) {
-    final state = widget.state;
-    final visible = state.configs
-        .where((c) => (c.id == 'model' || c.id == 'mode') && c.options.isNotEmpty)
-        .toList();
-    if (visible.isEmpty) return const [];
-    return [
-      for (final config in visible)
-        PopupMenuButton<String>(
-          tooltip: config.name ?? config.id,
-          color: kSurface2,
-          onSelected: (v) => state.setConfig(config.id, v),
-          itemBuilder: (context) => [
-            for (final option in config.options)
-              PopupMenuItem(
-                value: option.value,
-                child: Row(children: [
-                  Icon(
-                    option.value == config.currentValue
-                        ? Icons.radio_button_checked
-                        : Icons.radio_button_unchecked,
-                    size: 16,
-                    color: option.value == config.currentValue ? kAccent : kMuted,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(option.name, style: const TextStyle(fontSize: 13)),
-                ]),
-              ),
-          ],
-          child: Container(
-            margin: const EdgeInsets.only(right: 4),
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-            decoration: BoxDecoration(
-              color: kSurface2,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: kBorder),
-            ),
-            child: Text(
-              config.displayValue(),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 11, color: kText),
-            ),
-          ),
-        ),
-    ];
+  String _title(AppState state) {
+    final t = state.sessionTitle?.trim();
+    if (t != null && t.isNotEmpty) return t;
+    if (state.sessionId == null) return 'Новая сессия';
+    return 'Сессия';
   }
 
-  Widget _usageChip(UsageInfo usage) {
+  ({double fraction, int used, int size})? _usage(AppState state) {
+    final usage = state.conversation?.usage;
+    final window = usage?['contextWindow'];
+    if (window is! Map) return null;
+    final used = (window['usedTokens'] as num?)?.toInt() ?? 0;
+    final size = (window['maxTokens'] as num?)?.toInt() ?? 0;
+    if (size <= 0) return null;
+    return (fraction: (used / size).clamp(0.0, 1.0), used: used, size: size);
+  }
+
+  String _currentModelLabel(AppState state, ConversationState conn) {
+    final config = conn.config;
+    final model = '${config?['model'] ?? ''}';
+    if (model.isNotEmpty) return model.split('/').last;
+    final option = state.prep?.option('model');
+    final value = '${option?.currentValue ?? ''}';
+    if (value.isEmpty) return 'модель';
+    return value.split('/').last;
+  }
+
+  Widget _configChip(BuildContext context,
+      {required String label, required VoidCallback onTap}) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        margin: const EdgeInsets.only(right: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+        decoration: BoxDecoration(
+          color: kSurface2,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: kBorder),
+        ),
+        child: Text(label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 11)),
+      ),
+    );
+  }
+
+  Widget _usageChip(({double fraction, int used, int size}) usage) {
     return Padding(
       padding: const EdgeInsets.only(right: 4),
       child: Tooltip(
-        message: 'Контекст: ${humanBytes(usage.used)} из ${humanBytes(usage.size)}',
+        message: 'Контекст: ${humanTokens(usage.used)} из ${humanTokens(usage.size)}',
         child: SizedBox(
           width: 30,
           height: 30,
@@ -255,207 +270,114 @@ class _ChatPaneState extends State<ChatPane> {
     );
   }
 
-  Widget _reconnectBanner() {
-    return Container(
-      width: double.infinity,
-      color: const Color(0xFF231D10),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: const Row(children: [
-        SizedBox(
-            width: 12,
-            height: 12,
-            child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFE3B341))),
-        SizedBox(width: 8),
-        Text('Связь пропала — переподключаюсь и восстанавливаю историю',
-            style: TextStyle(color: Color(0xFFE3B341), fontSize: 11.5)),
-      ]),
-    );
-  }
-
   Widget _empty(BuildContext context) {
-    final commands = widget.state.commands;
+    final draft = widget.state.sessionId == null;
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
-        const SizedBox(height: 30),
+        const SizedBox(height: 34),
         const Icon(Icons.auto_awesome_rounded, size: 34, color: kAccent),
         const SizedBox(height: 12),
-        const Center(
-          child: Text('Напиши задачу — агент работает на ПК',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+        Center(
+          child: Text(
+            draft ? 'Новая сессия' : 'Пустая сессия',
+            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+          ),
         ),
         const SizedBox(height: 6),
         const Center(
           child: Text(
-            'Ответы, вызовы инструментов и запросы\nподтверждений придут сюда в реальном времени.',
+            'Напиши задачу — агент работает на компьютере, '
+            'а ответы и подтверждения приходят сюда.',
             textAlign: TextAlign.center,
             style: TextStyle(color: kMuted, fontSize: 12.5, height: 1.5),
           ),
         ),
-        if (commands.isNotEmpty) ...[
-          const SizedBox(height: 24),
-          const Text('Команды сессии',
-              style: TextStyle(color: kMuted, fontSize: 11, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              for (final c in commands.take(12))
-                ActionChip(
-                  backgroundColor: kSurface,
-                  side: const BorderSide(color: kBorder),
-                  label: Text('/${c.name}', style: const TextStyle(fontSize: 11.5)),
-                  onPressed: () {
-                    _input.text = '/${c.name} ';
-                    _focus.requestFocus();
-                  },
-                ),
-            ],
-          ),
-        ],
       ],
     );
   }
 
-  Widget _messageList(BuildContext context) {
-    final messages = widget.state.messages;
-    return SelectionArea(
-      child: ListView.builder(
-        controller: _scroll,
-        padding: const EdgeInsets.fromLTRB(14, 16, 14, 20),
-        itemCount: messages.length,
-        itemBuilder: (context, index) => _MessageView(
-          message: messages[index],
-          showRole: index == 0 || messages[index - 1].role != messages[index].role,
-        ),
-      ),
-    );
+  List<Widget> _buildRows(BuildContext context, List<Map<String, dynamic>> rows) {
+    final widgets = <Widget>[];
+    final buffer = StringBuffer();
+    void flushText() {
+      final text = buffer.toString().trim();
+      buffer.clear();
+      if (text.isNotEmpty) {
+        widgets.add(Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: MarkdownLite(text: text),
+        ));
+      }
+    }
+
+    for (final row in rows) {
+      switch (row['kind']) {
+        case 'userInput':
+          flushText();
+          widgets.add(_UserBubble(row: row));
+          break;
+        case 'assistantText':
+          final text = row['text'] as String? ?? '';
+          if (text.isEmpty) break;
+          if (buffer.isNotEmpty) buffer.write('\n\n');
+          buffer.write(text);
+          break;
+        case 'reasoning':
+          flushText();
+          widgets.add(_ReasoningTile(
+            text: row['text'] as String? ?? '',
+            streaming: row['state'] == 'streaming',
+          ));
+          break;
+        case 'toolCall':
+          flushText();
+          widgets.add(_ToolTile(row: row));
+          break;
+        case 'subagent':
+          flushText();
+          widgets.add(_SubagentTile(row: row));
+          break;
+        case 'timelineMarker':
+          flushText();
+          final label = row['label'] ?? row['text'];
+          if (label is String && label.isNotEmpty) {
+            widgets.add(Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Center(
+                child: Text(label,
+                    style: const TextStyle(color: kMuted, fontSize: 10.5)),
+              ),
+            ));
+          }
+          break;
+        case 'turnHeader':
+          break;
+      }
+    }
+    flushText();
+    return widgets;
   }
 
-  Widget _planBar(BuildContext context) {
-    final entries = widget.state.plan;
-    final done = entries.where((e) => e.status == 'completed').length;
+  Widget _interactions(BuildContext context, List<Map<String, dynamic>> items) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: kBorder)),
-        color: kSurface,
-      ),
-      child: Row(children: [
-        const Icon(Icons.checklist_rounded, size: 15, color: kAccent),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text('План: $done из ${entries.length}',
-              style: const TextStyle(fontSize: 11.5, color: kMuted)),
-        ),
-        InkWell(
-          onTap: () => _showPlan(context),
-          child: const Text('открыть', style: TextStyle(fontSize: 11.5, color: kAccent)),
-        ),
-      ]),
-    );
-  }
-
-  void _showPlan(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: kSurface,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.all(20),
-          children: [
-            for (final e in widget.state.plan)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Icon(
-                    e.status == 'completed'
-                        ? Icons.check_circle_rounded
-                        : e.status == 'in_progress'
-                            ? Icons.timelapse_rounded
-                            : Icons.radio_button_unchecked,
-                    size: 16,
-                    color: e.status == 'completed'
-                        ? kAccent
-                        : e.status == 'in_progress'
-                            ? const Color(0xFF7AA7FF)
-                            : kMuted,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                      child: Text(e.content,
-                          style: const TextStyle(fontSize: 13, height: 1.4))),
-                ]),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _permissionCard(BuildContext context) {
-    final p = widget.state.permission!;
-    return Container(
-      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1D1A12),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF5A4A22)),
-      ),
+      padding: const EdgeInsets.fromLTRB(10, 4, 10, 0),
+      color: kBg,
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(children: [
-            const Icon(Icons.shield_outlined, size: 17, color: Color(0xFFE3B341)),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(p.title,
-                  style: const TextStyle(
-                      fontWeight: FontWeight.w700, fontSize: 13.5)),
-            ),
-            InkWell(
-              onTap: () => widget.state.respondPermission(null),
-              child: const Icon(Icons.close_rounded, size: 18, color: kMuted),
-            ),
-          ]),
-          if (p.detail != null && p.detail!.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 120),
-              child: SingleChildScrollView(
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: kBg,
-                    borderRadius: BorderRadius.circular(9),
-                    border: Border.all(color: kBorder),
-                  ),
-                  child: Text(p.detail!, style: kMono),
-                ),
+          for (final interaction in items)
+            _InteractionCard(
+              interaction: interaction,
+              onResolve: ({optionId, freeText, action, content}) =>
+                  widget.state.resolveInteraction(
+                interaction['interactionId'] as String? ?? '',
+                optionId: optionId,
+                freeText: freeText,
+                action: action,
+                content: content,
               ),
             ),
-          ],
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final option in p.options)
-                _PermissionButton(
-                  label: option.name,
-                  kind: option.kind,
-                  onPressed: () => widget.state.respondPermission(option.id),
-                ),
-            ],
-          ),
         ],
       ),
     );
@@ -463,6 +385,8 @@ class _ChatPaneState extends State<ChatPane> {
 
   Widget _composer(BuildContext context) {
     final state = widget.state;
+    final running = state.conversation?.canStop == true ||
+        state.conversation?.isRunning == true;
     return Container(
       padding: EdgeInsets.fromLTRB(
           12, 8, 12, 8 + MediaQuery.of(context).viewPadding.bottom * 0.2),
@@ -485,30 +409,116 @@ class _ChatPaneState extends State<ChatPane> {
                 hintText: 'Задача для агента…',
                 isDense: true,
               ),
-              onChanged: (value) {
-                state.saveDraft(state.sessionId, value);
-                setState(() {});
-              },
+              onChanged: (_) => setState(() {}),
             ),
           ),
           const SizedBox(width: 8),
-          if (state.running)
+          if (running)
             _CircleAction(
               icon: Icons.stop_rounded,
               color: const Color(0xFFFF7B72),
-              onTap: state.cancelTurn,
               tooltip: 'Остановить',
+              onTap: state.stop,
             )
           else
             _CircleAction(
               icon: Icons.arrow_upward_rounded,
               color: kAccent,
-              onTap: _input.text.trim().isEmpty ? null : _send,
               tooltip: 'Отправить',
+              onTap: _input.text.trim().isEmpty || state.sending ? null : _send,
             ),
         ],
       ),
     );
+  }
+
+  void _showConfig(BuildContext context) {
+    final state = widget.state;
+    final prep = state.prep;
+    final conn = state.conversation;
+    if (prep == null || conn == null) return;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: kSurface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.all(20),
+          children: [
+            const Text('Модель и режим',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 14),
+            for (final option in prep.configOptions)
+              if (option.id == 'model' ||
+                  option.id == 'mode' ||
+                  option.id == 'thought_level')
+                _configSection(context, option, conn),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _configSection(
+      BuildContext context, ConfigOption option, ConversationState conn) {
+    final state = widget.state;
+    final isMode = option.id == 'mode';
+    final isModel = option.id == 'model';
+    final String current = isModel
+        ? '${conn.config?['provider'] ?? ''}/${conn.config?['model'] ?? ''}'
+        : isMode
+            ? conn.currentMode
+            : conn.currentThought;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(option.name,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final value in option.options)
+                ChoiceChip(
+                  label: Text(value.name, style: const TextStyle(fontSize: 12)),
+                  selected: value.value == current ||
+                      (isModel && current == '/'),
+                  selectedColor: kAccent.withValues(alpha: 0.2),
+                  backgroundColor: kSurface2,
+                  side: const BorderSide(color: kBorder),
+                  onSelected: (_) async {
+                    Navigator.of(context).pop();
+                    if (isMode) {
+                      await state.setMode(value.value);
+                    } else if (isModel) {
+                      await state.setModel(value.value);
+                    } else {
+                      final provider = '${conn.config?['provider'] ?? ''}';
+                      final model = '${conn.config?['model'] ?? ''}';
+                      final base = provider.isNotEmpty && model.isNotEmpty
+                          ? '$provider/$model'
+                          : prepModelValue(state);
+                      await state.setModel(base, thought: value.value);
+                    }
+                  },
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  String prepModelValue(AppState state) {
+    final option = state.prep?.option('model');
+    return '${option?.currentValue ?? ''}';
   }
 }
 
@@ -540,125 +550,54 @@ class _CircleAction extends StatelessWidget {
             color: enabled ? color : kSurface2,
             shape: BoxShape.circle,
           ),
-          child: Icon(icon,
-              size: 21, color: enabled ? const Color(0xFF06231A) : kMuted),
+          child: Icon(icon, size: 21, color: enabled ? const Color(0xFF06231A) : kMuted),
         ),
       ),
     );
   }
 }
 
-class _PermissionButton extends StatelessWidget {
-  const _PermissionButton({required this.label, this.kind, required this.onPressed});
-
-  final String label;
-  final String? kind;
-  final VoidCallback onPressed;
+class _UserBubble extends StatelessWidget {
+  const _UserBubble({required this.row});
+  final Map<String, dynamic> row;
 
   @override
   Widget build(BuildContext context) {
-    final allow = kind == null || kind!.startsWith('allow');
-    return FilledButton(
-      onPressed: onPressed,
-      style: FilledButton.styleFrom(
-        backgroundColor: allow ? kAccent : kSurface2,
-        foregroundColor: allow ? const Color(0xFF06231A) : kText,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-        textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-      ),
-      child: Text(label),
-    );
-  }
-}
-
-class _MessageView extends StatelessWidget {
-  const _MessageView({required this.message, required this.showRole});
-
-  final ChatMessage message;
-  final bool showRole;
-
-  @override
-  Widget build(BuildContext context) {
-    final user = message.isUser;
+    final text = row['text'] as String? ?? '';
     return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
-      child: Column(
-        crossAxisAlignment: user ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-        children: [
-          if (showRole)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6, left: 2),
-              child: Text(user ? 'ты' : 'ZCode',
-                  style: const TextStyle(
-                      color: kMuted, fontSize: 10.5, fontWeight: FontWeight.w600)),
+      padding: const EdgeInsets.only(bottom: 12, left: 40),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+          decoration: BoxDecoration(
+            color: kAccent.withValues(alpha: 0.13),
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(16),
+              topRight: Radius.circular(16),
+              bottomLeft: Radius.circular(16),
+              bottomRight: Radius.circular(5),
             ),
-          if (user)
-            Container(
-              constraints: const BoxConstraints(maxWidth: 560),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-              decoration: BoxDecoration(
-                color: kAccent.withValues(alpha: 0.13),
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(16),
-                  topRight: Radius.circular(16),
-                  bottomLeft: Radius.circular(16),
-                  bottomRight: Radius.circular(5),
-                ),
-                border: Border.all(color: kAccent.withValues(alpha: 0.25)),
-              ),
-              child: Text(
-                message.plainText,
-                style: TextStyle(
-                  fontSize: 14,
-                  height: 1.45,
-                  color: message.collapsed ? kMuted : kText,
-                  fontStyle: message.collapsed ? FontStyle.italic : FontStyle.normal,
-                ),
-              ),
-            )
-          else
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                for (final part in message.parts) _PartView(part: part),
-              ],
-            ),
-        ],
+            border: Border.all(color: kAccent.withValues(alpha: 0.25)),
+          ),
+          child: SelectableText(text,
+              style: const TextStyle(fontSize: 14, height: 1.45)),
+        ),
       ),
     );
   }
 }
 
-class _PartView extends StatelessWidget {
-  const _PartView({required this.part});
-
-  final ChatPart part;
-
-  @override
-  Widget build(BuildContext context) {
-    switch (part.type) {
-      case 'thought':
-        return _ThoughtView(text: part.text);
-      case 'tool':
-        return _ToolCard(tool: part.tool!);
-      default:
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: MarkdownLite(text: part.text),
-        );
-    }
-  }
-}
-
-class _ThoughtView extends StatefulWidget {
-  const _ThoughtView({required this.text});
+class _ReasoningTile extends StatefulWidget {
+  const _ReasoningTile({required this.text, required this.streaming});
   final String text;
+  final bool streaming;
 
   @override
-  State<_ThoughtView> createState() => _ThoughtViewState();
+  State<_ReasoningTile> createState() => _ReasoningTileState();
 }
 
-class _ThoughtViewState extends State<_ThoughtView> {
+class _ReasoningTileState extends State<_ReasoningTile> {
   bool _open = false;
 
   @override
@@ -682,8 +621,8 @@ class _ThoughtViewState extends State<_ThoughtView> {
               Row(children: [
                 const Icon(Icons.psychology_outlined, size: 14, color: kMuted),
                 const SizedBox(width: 7),
-                const Text('Размышления',
-                    style: TextStyle(color: kMuted, fontSize: 11.5)),
+                Text(widget.streaming ? 'Думает…' : 'Размышления',
+                    style: const TextStyle(color: kMuted, fontSize: 11.5)),
                 const Spacer(),
                 Icon(_open ? Icons.expand_less : Icons.expand_more,
                     size: 16, color: kMuted),
@@ -691,8 +630,7 @@ class _ThoughtViewState extends State<_ThoughtView> {
               if (_open) ...[
                 const SizedBox(height: 6),
                 Text(widget.text,
-                    style: const TextStyle(
-                        color: kMuted, fontSize: 12, height: 1.5)),
+                    style: const TextStyle(color: kMuted, fontSize: 12, height: 1.5)),
               ],
             ],
           ),
@@ -702,21 +640,30 @@ class _ThoughtViewState extends State<_ThoughtView> {
   }
 }
 
-class _ToolCard extends StatefulWidget {
-  const _ToolCard({required this.tool});
-  final ToolCallData tool;
+class _ToolTile extends StatefulWidget {
+  const _ToolTile({required this.row});
+  final Map<String, dynamic> row;
 
   @override
-  State<_ToolCard> createState() => _ToolCardState();
+  State<_ToolTile> createState() => _ToolTileState();
 }
 
-class _ToolCardState extends State<_ToolCard> {
+class _ToolTileState extends State<_ToolTile> {
   bool _open = false;
 
   @override
   Widget build(BuildContext context) {
-    final tool = widget.tool;
-    final color = colorForStatus(tool.status, Theme.of(context).colorScheme);
+    final row = widget.row;
+    final name = '${row['toolName'] ?? row['name'] ?? 'tool'}';
+    final status = '${row['status'] ?? ''}';
+    final input = row['inputText'] as String? ?? '';
+    final output = row['output'];
+    final outputText = output is Map ? '${output['text'] ?? ''}' : '';
+    final error = row['error'];
+    final color = toolStatusColor(status);
+    final running = status == 'running' ||
+        status == 'inputStreaming' ||
+        status == 'pendingApproval';
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
@@ -734,58 +681,254 @@ class _ToolCardState extends State<_ToolCard> {
               padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
               child: Row(
                 children: [
-                  Icon(iconForKind(tool.kind), size: 16, color: color),
+                  Icon(iconForTool(name), size: 16, color: color),
                   const SizedBox(width: 9),
                   Expanded(
-                    child: Text(
-                      tool.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 12.5, height: 1.3),
-                    ),
+                    child: Text(name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 12.5, fontFamily: 'monospace')),
                   ),
-                  Container(
-                    width: 7,
-                    height: 7,
-                    margin: const EdgeInsets.symmetric(horizontal: 6),
-                    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-                  ),
+                  if (status.isNotEmpty)
+                    Text(_statusLabel(status),
+                        style: TextStyle(fontSize: 10, color: color)),
+                  const SizedBox(width: 6),
                   Icon(_open ? Icons.expand_less : Icons.expand_more,
                       size: 17, color: kMuted),
                 ],
               ),
             ),
           ),
-          if (_open)
+          if (_open || running)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  if (tool.text.isNotEmpty)
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: kBg,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: kBorder),
-                      ),
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxHeight: 260),
-                        child: SingleChildScrollView(
-                          child: Text(tool.text, style: kMono),
-                        ),
+                  if (input.isNotEmpty) _kv('Вход', input),
+                  if (outputText.isNotEmpty) _kv('Выход', outputText),
+                  if (error is Map)
+                    _kv('Ошибка', '${error['code'] ?? ''} ${error['message'] ?? ''}'),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _statusLabel(String status) => switch (status) {
+        'running' || 'inputStreaming' => 'выполняется',
+        'pendingApproval' => 'ждёт подтверждения',
+        'success' => 'готово',
+        'error' => 'ошибка',
+        'cancelled' => 'отменено',
+        _ => status,
+      };
+
+  Widget _kv(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(color: kMuted, fontSize: 10.5)),
+          const SizedBox(height: 4),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: kBg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: kBorder),
+            ),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 260),
+              child: SingleChildScrollView(
+                child: SelectableText(value, style: kMono),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SubagentTile extends StatelessWidget {
+  const _SubagentTile({required this.row});
+  final Map<String, dynamic> row;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = row['title'] ?? row['agentName'] ?? 'Подагент';
+    final summary = row['summaryText'] as String? ?? '';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: kSurface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: kBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            const Icon(Icons.hub_outlined, size: 15, color: Color(0xFF7AA7FF)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text('$title',
+                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+            ),
+            Text('${row['status'] ?? ''}',
+                style: const TextStyle(fontSize: 10, color: kMuted)),
+          ]),
+          if (summary.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(summary,
+                  maxLines: 4,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: kMuted, fontSize: 11.5, height: 1.4)),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InteractionCard extends StatefulWidget {
+  const _InteractionCard({required this.interaction, required this.onResolve});
+  final Map<String, dynamic> interaction;
+  final Future<void> Function({
+    String? optionId,
+    String? freeText,
+    String? action,
+    Map<String, dynamic>? content,
+  }) onResolve;
+
+  @override
+  State<_InteractionCard> createState() => _InteractionCardState();
+}
+
+class _InteractionCardState extends State<_InteractionCard> {
+  final _freeText = TextEditingController();
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _freeText.dispose();
+    super.dispose();
+  }
+
+  Future<void> _resolve({
+    String? optionId,
+    String? freeText,
+    String? action,
+    Map<String, dynamic>? content,
+  }) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await widget.onResolve(
+        optionId: optionId,
+        freeText: freeText,
+        action: action,
+        content: content,
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final payload = widget.interaction['payload'];
+    if (payload is! Map) return const SizedBox.shrink();
+    final kind = payload['kind'];
+    final options = payload['options'];
+    final freeText = payload['freeText'] == true;
+    final title = kind == 'permission'
+        ? 'Нужно подтверждение · ${payload['toolName'] ?? ''}'
+        : 'Ждёт твоего ответа';
+    final detail = kind == 'permission'
+        ? payload['summary']
+        : payload['prompt'];
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1D1A12),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF5A4A22)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(children: [
+            const Icon(Icons.shield_outlined, size: 17, color: Color(0xFFE3B341)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(title,
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13.5)),
+            ),
+          ]),
+          if (detail is String && detail.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(detail,
+                  style: const TextStyle(color: kMuted, fontSize: 12, height: 1.4)),
+            ),
+          if (options is List && options.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final option in options.whereType<Map>())
+                    _OptionButton(
+                      option: option,
+                      busy: _busy,
+                      onTap: () {
+                        final content = <String, dynamic>{
+                          for (final key in const ['value', 'label', 'kind'])
+                            if (option[key] != null) key: option[key],
+                        };
+                        _resolve(
+                          optionId: option['optionId']?.toString(),
+                          action: 'accept',
+                          content: content,
+                        );
+                      },
+                    ),
+                ],
+              ),
+            ),
+          if (freeText)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _freeText,
+                      style: const TextStyle(fontSize: 13),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        hintText: 'Ответ…',
                       ),
                     ),
-                  if (tool.rawInput != null) ...[
-                    const SizedBox(height: 6),
-                    SelectableText(
-                      const JsonEncoder.withIndent('  ').convert(tool.rawInput),
-                      style: kMono.copyWith(color: kMuted, fontSize: 11),
-                    ),
-                  ],
-                  if (tool.text.isEmpty && tool.rawInput == null)
-                    const Text('Нет вывода', style: TextStyle(color: kMuted, fontSize: 11.5)),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    onPressed: _busy
+                        ? null
+                        : () => _resolve(freeText: _freeText.text.trim()),
+                    icon: const Icon(Icons.send_rounded, size: 18),
+                  ),
                 ],
               ),
             ),
@@ -795,7 +938,44 @@ class _ToolCardState extends State<_ToolCard> {
   }
 }
 
-/// Tiny markdown renderer: fenced code blocks, inline code and bold.
+class _OptionButton extends StatelessWidget {
+  const _OptionButton({
+    required this.option,
+    required this.busy,
+    required this.onTap,
+  });
+
+  final Map option;
+  final bool busy;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final kind = '${option['kind'] ?? ''}';
+    final label = '${option['label'] ?? _defaultLabel(kind)}';
+    final allow = kind.startsWith('allow');
+    return FilledButton(
+      onPressed: busy ? null : onTap,
+      style: FilledButton.styleFrom(
+        backgroundColor: allow ? kAccent : kSurface2,
+        foregroundColor: allow ? const Color(0xFF06231A) : kText,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+        textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+      ),
+      child: Text(label),
+    );
+  }
+
+  String _defaultLabel(String kind) => switch (kind) {
+        'allowOnce' => 'Разрешить',
+        'allowAlways' => 'Разрешать всегда',
+        'deny' => 'Отклонить',
+        'custom' => 'Свой ответ',
+        _ => 'Выбрать',
+      };
+}
+
+/// Markdown-lite: fenced code, inline code, bold.
 class MarkdownLite extends StatelessWidget {
   const MarkdownLite({super.key, required this.text});
   final String text;
@@ -865,7 +1045,7 @@ class MarkdownLite extends StatelessWidget {
       if (token.startsWith('**')) {
         spans.add(TextSpan(
           text: token.substring(2, token.length - 2),
-          style: const TextStyle(fontWeight: FontWeight.w700, color: kText),
+          style: const TextStyle(fontWeight: FontWeight.w700),
         ));
       } else {
         spans.add(TextSpan(
@@ -918,7 +1098,9 @@ class _CodeBlock extends StatelessWidget {
                 onTap: () {
                   Clipboard.setData(ClipboardData(text: code));
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Скопировано'), duration: Duration(seconds: 1)),
+                    const SnackBar(
+                        content: Text('Скопировано'),
+                        duration: Duration(seconds: 1)),
                   );
                 },
                 child: const Padding(
