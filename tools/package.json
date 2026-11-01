@@ -1,0 +1,12 @@
+{
+  "name": "zcode-fold-bridge",
+  "private": true,
+  "type": "module",
+  "description": "Hands the desktop Z.ai account token to the ZCode Fold phone over the LAN (one-time PIN).",
+  "scripts": {
+    "start": "node bridge.mjs"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
+}

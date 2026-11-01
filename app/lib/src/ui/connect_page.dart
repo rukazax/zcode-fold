@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import 'fold_layout.dart';
+import 'login_page.dart';
 import 'qr_scan_page.dart';
 import 'theme.dart';
 
@@ -39,8 +40,23 @@ class _ConnectPageState extends State<ConnectPage> {
     }
   }
 
+  Future<void> _login() async {
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => LoginWebViewPage(state: widget.state)),
+    );
+    if (mounted) setState(() {});
+  }
+
   Future<void> _connect() async {
     final url = _url.text.trim();
+    if (url.startsWith('http://') && !url.startsWith('http://localhost')) {
+      // Desktop bridge URL: fetch the account token, then return to pairing.
+      await _useBridge(url);
+      if (mounted && widget.state.hasJwt) {
+        setState(() => _error = null);
+      }
+      return;
+    }
     final problem = AppState.validateLink(url);
     if (problem != null) {
       setState(() => _error = problem);
@@ -55,7 +71,20 @@ class _ConnectPageState extends State<ConnectPage> {
     setState(() => _busy = false);
   }
 
-  @override
+  /// Bridge flow: QR contains a desktop LAN URL with the account token.
+  Future<void> _useBridge(String bridgeUrl) async {
+    if (!bridgeUrl.startsWith('http://')) {
+      setState(() => _error = 'Мост доступен только по локальному http');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    await widget.state.consumeBridge(bridgeUrl);
+    if (!mounted) return;
+    setState(() => _busy = false);
+  }  @override
   Widget build(BuildContext context) {
     final fold = FoldInfo.of(context);
     final wide = fold.isUnfolded;
@@ -212,7 +241,7 @@ class _ConnectPageState extends State<ConnectPage> {
             maxLines: 3,
             decoration: InputDecoration(
               labelText: 'Ссылка или QR',
-              hintText: 'https://zcode.z.ai/remote/v4?sid=…&hash=…&t=…',
+              hintText: 'https://zcode.z.ai/remote/v4?sid=…&name=…',
               suffixIcon: IconButton(
                 tooltip: 'Вставить из буфера',
                 onPressed: () async {
@@ -226,10 +255,6 @@ class _ConnectPageState extends State<ConnectPage> {
               ),
             ),
           ),
-          if (_error != null) ...[
-            const SizedBox(height: 12),
-            Text(_error!, style: const TextStyle(color: Color(0xFFFF7B72), fontSize: 13)),
-          ],
           const SizedBox(height: 18),
           Row(
             children: [
@@ -251,6 +276,38 @@ class _ConnectPageState extends State<ConnectPage> {
                 icon: const Icon(Icons.qr_code_scanner_rounded, size: 18),
                 label: const Text('QR'),
               ),
+            ],
+          ),
+          const SizedBox(height: 14),
+        Text(
+          _error != null && _error!.isNotEmpty
+              ? _error!
+              : 'Главный путь — мост с ПК: на компьютере запусти '
+                  'tools\\bridge.mjs (в репо) и отсканируй его QR кнопкой «QR» '
+                  '— токен аккаунта перейдёт с компьютера локально, без '
+                  'логина на телефоне. Логин-кнопка ниже — запасной путь.',
+          style: const TextStyle(
+              color: Color(0xFFE3B341), fontSize: 12.5, height: 1.4),
+        ),
+        const SizedBox(height: 14),
+        Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _busy ? null : _login,
+                  icon: const Icon(Icons.account_circle_rounded, size: 18),
+                  label: Text(widget.state.loginRequired
+                      ? 'Войти в аккаунт Z.ai'
+                      : 'Аккаунт Z.ai'),
+                ),
+              ),
+              if (!widget.state.loginRequired) ...[
+                const SizedBox(width: 10),
+                OutlinedButton(
+                  onPressed: _busy ? null : () => widget.state.clearJwt(),
+                  child: const Text('Выйти'),
+                ),
+              ],
             ],
           ),
           const SizedBox(height: 12),

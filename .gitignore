@@ -9,3 +9,11 @@ app/android/local.properties
 # Research scratch
 .research/
 .release-notes.md
+
+# Bridge tool deps
+.tools/node_modules/
+tools/node_modules/
+tools/bridge-qr.png
+bridge-qr.png
+.jwt
+.oauth-stack.json

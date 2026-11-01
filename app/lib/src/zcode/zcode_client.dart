@@ -16,6 +16,7 @@ String _reqId(String prefix) => generateRequestId(prefix);
 /// relay connect -> pair -> bootstrap -> workspace bridge -> channel RPC.
 class ZcodeRemoteClient {
   final RemoteConnectionParams params;
+  final Future<String> Function()? tokenProvider;
   final void Function(String line)? onLog;
 
   late final RelayClient relay;
@@ -31,8 +32,8 @@ class ZcodeRemoteClient {
   Stream<dynamic> get workspaceListUpdated =>
       _workspaceListUpdatedController.stream;
 
-  ZcodeRemoteClient(this.params, {this.onLog}) {
-    relay = RelayClient(params, onLog: onLog);
+  ZcodeRemoteClient(this.params, {this.onLog, this.tokenProvider}) {
+    relay = RelayClient(params, onLog: onLog, tokenProvider: tokenProvider);
     _payloadSub = relay.payloads.listen(_dispatchPayload);
     relay.stateListenable.addListener(_onRelayState);
   }

@@ -104,28 +104,25 @@ void main() {
       );
     });
 
-    test('missing hash returns null', () {
-      expect(
-        RemoteConnectionParams.parse(
-            'https://zcode.z.ai/remote/v4?sid=s&t=1'),
-        isNull,
-      );
+    test('missing hash is accepted (3.17 links carry only sid)', () {
+      final params = RemoteConnectionParams.parse(
+          'https://zcode.z.ai/remote/v4?sid=s&t=1');
+      expect(params, isNotNull);
+      expect(params!.passHash, isNull);
     });
 
-    test('missing t returns null', () {
-      expect(
-        RemoteConnectionParams.parse(
-            'https://zcode.z.ai/remote/v4?sid=s&hash=h'),
-        isNull,
-      );
+    test('missing t is accepted (timestamp is optional now)', () {
+      final params = RemoteConnectionParams.parse(
+          'https://zcode.z.ai/remote/v4?sid=s&hash=h');
+      expect(params, isNotNull);
+      expect(params!.timestamp, 0);
     });
 
-    test('invalid timestamp returns null', () {
-      expect(
-        RemoteConnectionParams.parse(
-            'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=abc'),
-        isNull,
-      );
+    test('invalid timestamp falls back to 0', () {
+      final params = RemoteConnectionParams.parse(
+          'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=abc');
+      expect(params, isNotNull);
+      expect(params!.timestamp, 0);
     });
 
     test('trimmed query values', () {

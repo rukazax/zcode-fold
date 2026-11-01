@@ -33,7 +33,8 @@ class _QrScanPageState extends State<QrScanPage> {
   }
 
   bool _isPairingLink(String value) =>
-      value.contains('sid=') && value.contains('hash=');
+      (value.contains('sid=') && value.contains('hash=')) ||
+      (value.contains('sid=') && value.contains('remote/v4'));
 
   void _onDetect(BarcodeCapture capture) {
     if (_handled) return;
@@ -74,7 +75,12 @@ class _QrScanPageState extends State<QrScanPage> {
           .whereType<String>()
           .where((v) => v.isNotEmpty);
       for (final v in codes) {
-        if (_isPairingLink(v)) {
+        final isBridge =
+            v.startsWith('http://') &&
+            v.isNotEmpty &&
+            !v.startsWith('http://localhost/remote') &&
+            Uri.tryParse(v)?.path != '/remote/v4';
+        if (_isPairingLink(v) || isBridge) {
           _handled = true;
           if (mounted && context.mounted) Navigator.of(context).pop(v);
           return;

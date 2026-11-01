@@ -51,8 +51,16 @@ String? relayCloseReason(int code) {
 
 /// Reimplementation of the relay terminal socket (`pen` class in the web
 /// client). JSON text frames over `wss://<host>/ws`.
+///
+/// Two auth modes:
+///  * 3.17+ — every (re)connect mints a short-lived terminal token via
+///    [tokenProvider] and dials `wss://<origin>/api/v1/remote/ws2?token=…`;
+///    `auth_init` carries no proof;
+///  * legacy links (≤3.16, `hash`+`t` in the URL) answer the HMAC challenge
+///    on the old `/ws` relay.
 class RelayClient {
   final RemoteConnectionParams params;
+  final Future<String> Function()? tokenProvider;
   final void Function(String line)? onLog;
 
   static const heartbeatInterval = Duration(seconds: 10);
@@ -95,7 +103,7 @@ class RelayClient {
   Timer? _reconnectTimer;
   Timer? _rewaitTimer;
 
-  RelayClient(this.params, {this.onLog});
+  RelayClient(this.params, {this.onLog, this.tokenProvider});
 
   void _log(String line) => onLog?.call(line);
 
@@ -123,7 +131,42 @@ class RelayClient {
     _socket = null;
     _lastPairStatusAckAt = DateTime.now();
     _lastInboundAt = DateTime.now();
-    final uri = params.relayWsUri;
+    final legacy = params.passHash != null && params.passHash!.isNotEmpty;
+
+    String? token;
+    if (!legacy) {
+      // Terminal tokens live ~60 s, so mint a fresh one per (re)connect.
+      if (tokenProvider == null) {
+        _log('[relay] нет terminal-токена: нужен вход в аккаунт и свежий QR');
+        _connectInFlight = false;
+        _setState(RelayState.closed);
+        return;
+      }
+      try {
+        token = await tokenProvider!().timeout(const Duration(seconds: 20));
+      } catch (e) {
+        _log('[relay] token mint failed: $e');
+        _failureController.add(RelayFailure('token-mint-failed', '$e'));
+        _connectInFlight = false;
+        _setState(RelayState.error);
+        return;
+      }
+    }
+
+    final Uri uri;
+    if (legacy) {
+      uri = params.relayWsUri;
+    } else {
+      // Terminal socket of the 3.17 cloud relay.
+      final base = params.relayWsUri;
+      uri = base.replace(
+        path: '/api/v1/remote/ws2',
+        queryParameters: {
+          ...?base.queryParameters,
+          'token': token,
+        },
+      );
+    }
     _log('[relay] connecting ${_safeUriForLog(uri)}');
     WebSocketChannel socket;
     try {
@@ -157,17 +200,29 @@ class RelayClient {
     );
     _connectInFlight = false;
     _setState(RelayState.authenticating);
-    _send({
-      'type': 'auth_init',
-      'role': 'terminal',
-      'device_sid': params.deviceSid,
-      'meta': {
-        'platform': platformName(),
-        'version': params.appVersion ?? 'web',
-        'name': clientAppName,
-      },
-      'client_ts': DateTime.now().millisecondsSinceEpoch,
-    });
+    final Map<String, dynamic> init = legacy
+        ? {
+            'type': 'auth_init',
+            'role': 'terminal',
+            'device_sid': params.deviceSid,
+            'meta': {
+              'platform': platformName(),
+              'version': params.appVersion ?? 'web',
+              'name': clientAppName,
+            },
+            'client_ts': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          }
+        : {
+            'type': 'auth_init',
+            'device_sid': params.deviceSid,
+            'meta': {
+              'platform': platformName(),
+              'version': params.appVersion ?? 'web',
+              'name': clientAppName,
+            },
+            'client_ts': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          };
+    _send(init);
   }
 
   void _send(Map<String, dynamic> frame) {
@@ -203,7 +258,7 @@ class RelayClient {
     _send({
       'type': 'data',
       'payload': payload,
-      'client_ts': DateTime.now().millisecondsSinceEpoch,
+      'client_ts': DateTime.now().millisecondsSinceEpoch ~/ 1000,
     });
   }
 
@@ -216,7 +271,7 @@ class RelayClient {
       _send({
         'type': 'data',
         'payload': payload,
-        'client_ts': DateTime.now().millisecondsSinceEpoch,
+        'client_ts': DateTime.now().millisecondsSinceEpoch ~/ 1000,
       });
     }
   }
@@ -239,16 +294,21 @@ class RelayClient {
     if (frame == null) return;
     switch (frame['type']) {
       case 'auth_challenge':
+        // Legacy (up to ~3.16) links carried hash/t in the URL and answered
+        // the challenge with an HMAC proof. 3.17+ links hold no secret —
+        // the challenge simply does not arrive; keep the path for old QRs.
+        final passHash = params.passHash;
+        if (passHash == null || passHash.isEmpty) break;
         _send({
           'type': 'auth_response',
           'device_sid': params.deviceSid,
           'proof': calculateProof(
-            passHash: params.passHash,
+            passHash: passHash,
             nonce: frame['nonce'] as String? ?? '',
             role: 'terminal',
             deviceSid: params.deviceSid,
           ),
-          'client_ts': DateTime.now().millisecondsSinceEpoch,
+          'client_ts': DateTime.now().millisecondsSinceEpoch ~/ 1000,
         });
         break;
       case 'auth_ack':
@@ -368,7 +428,7 @@ class RelayClient {
       _send({
         'type': 'pair_status_query',
         'device_sid': params.deviceSid,
-        'client_ts': DateTime.now().millisecondsSinceEpoch,
+        'client_ts': DateTime.now().millisecondsSinceEpoch ~/ 1000,
       });
     });
   }
@@ -386,7 +446,7 @@ class RelayClient {
       _send({
         'type': 'pair_status_query',
         'device_sid': params.deviceSid,
-        'client_ts': DateTime.now().millisecondsSinceEpoch,
+        'client_ts': DateTime.now().millisecondsSinceEpoch ~/ 1000,
       });
     } else if (state != RelayState.idle &&
         state != RelayState.closed &&

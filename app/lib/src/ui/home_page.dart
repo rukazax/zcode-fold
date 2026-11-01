@@ -203,7 +203,7 @@ class HomePage extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   const Center(
-                    child: Text('ZCode Fold 0.2.1 · прямое подключение ZCode Remote',
+                    child: Text('ZCode Fold 0.3.7 · прямое подключение ZCode Remote',
                         style: TextStyle(color: kMuted, fontSize: 10.5)),
                   ),
                 ],

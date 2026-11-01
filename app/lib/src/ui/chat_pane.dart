@@ -179,7 +179,7 @@ class _ChatPaneState extends State<ChatPane> {
               ],
             ),
           ),
-          if (conn != null && state.prep != null)
+          if (conn != null)
             _configChip(
               context,
               label: _currentModelLabel(state, conn),
@@ -434,9 +434,16 @@ class _ChatPaneState extends State<ChatPane> {
 
   void _showConfig(BuildContext context) {
     final state = widget.state;
-    final prep = state.prep;
     final conn = state.conversation;
-    if (prep == null || conn == null) return;
+    if (conn == null) return;
+    final prep = state.prep;
+    final modes = [
+      ('build', 'Build'),
+      ('edit', 'Edit'),
+      ('plan', 'Plan'),
+      ('yolo', 'Yolo'),
+    ];
+    final thoughts = conn.thoughtLevels;
     showModalBottomSheet(
       context: context,
       backgroundColor: kSurface,
@@ -451,14 +458,95 @@ class _ChatPaneState extends State<ChatPane> {
             const Text('Модель и режим',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
             const SizedBox(height: 14),
-            for (final option in prep.configOptions)
-              if (option.id == 'model' ||
-                  option.id == 'mode' ||
-                  option.id == 'thought_level')
-                _configSection(context, option, conn),
+            // Model: the catalog lives on the desktop and is not exposed to
+            // remote terminals in 3.17 — show the current one and point at the
+            // slash command for switching.
+            if (prep != null)
+              for (final option in prep.configOptions)
+                if (option.id == 'model')
+                  _configSection(context, option, conn),
+            if (prep == null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Модель',
+                        style: TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 6),
+                    Text(
+                      '${conn.config?['provider'] ?? ''}/${conn.config?['model'] ?? ''}'
+                          .replaceFirst(RegExp(r'^/'), ''),
+                      style: const TextStyle(fontSize: 12, color: kMuted),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text('Сменить модель — командой /model в чате',
+                        style: TextStyle(fontSize: 11.5, color: kMuted)),
+                  ],
+                ),
+              ),
+            _choiceSection(
+              title: 'Режим',
+              current: conn.currentMode,
+              options: modes,
+              onPick: state.setMode,
+            ),
+            if (thoughts.isNotEmpty)
+              _choiceSection(
+                title: 'Уровень размышлений',
+                current: conn.currentThought,
+                options: thoughts.map((t) => (t, t)).toList(),
+                onPick: (value) async {
+                  final provider = '${conn.config?['provider'] ?? ''}';
+                  final model = '${conn.config?['model'] ?? ''}';
+                  if (model.isEmpty) return;
+                  await state.setModel(
+                    provider.isNotEmpty ? '$provider/$model' : model,
+                    thought: value,
+                  );
+                },
+              ),
             const SizedBox(height: 8),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _choiceSection({
+    required String title,
+    required String current,
+    required List<(String, String)> options,
+    required Future<void> Function(String) onPick,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final (value, label) in options)
+                ChoiceChip(
+                  label: Text(label, style: const TextStyle(fontSize: 12)),
+                  selected: value == current,
+                  selectedColor: kAccent.withValues(alpha: 0.2),
+                  backgroundColor: kSurface2,
+                  side: const BorderSide(color: kBorder),
+                  onSelected: (_) {
+                    Navigator.of(context).pop();
+                    onPick(value);
+                  },
+                ),
+            ],
+          ),
+        ],
       ),
     );
   }

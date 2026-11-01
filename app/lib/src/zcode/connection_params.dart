@@ -4,7 +4,7 @@
 /// Mirrors `zC()` in the web client bundle.
 class RemoteConnectionParams {
   final String deviceSid;
-  final String passHash;
+  final String? passHash;
   final int timestamp;
   final String? deviceMid;
   final String? deviceName;
@@ -37,17 +37,17 @@ class RemoteConnectionParams {
     }
     final sid = _get(uri, 'sid');
     final hash = _get(uri, 'hash');
+    // ZCode 3.17+ links carry only sid/mid/name/app_version — the sid is the
+    // pairing credential, no timestamp/hash anymore. Old links (hash+t) stay
+    // supported for the HMAC challenge path.
     final t = int.tryParse(_get(uri, 't') ?? '');
-    if ((uri.scheme != 'https' && uri.scheme != 'wss') ||
-        sid == null ||
-        hash == null ||
-        t == null) {
+    if ((uri.scheme != 'https' && uri.scheme != 'wss') || sid == null) {
       return null;
     }
     return RemoteConnectionParams(
       deviceSid: sid,
       passHash: hash,
-      timestamp: t,
+      timestamp: t ?? 0,
       deviceMid: _get(uri, 'mid'),
       deviceName: _get(uri, 'name'),
       appVersion: _get(uri, 'app_version'),
@@ -55,6 +55,8 @@ class RemoteConnectionParams {
       source: uri,
     );
   }
+
+  bool get legacyHmac => passHash != null && timestamp > 0;
 
   /// Relay websocket URL. Mirrors `Jc()` / `pen.connect()`:
   /// `${ws(s)://<host>/ws` plus `?mid=` when present.

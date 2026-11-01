@@ -3,8 +3,10 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'cloud_api.dart';
 import 'models.dart';
 import 'zcode/conversation.dart';
 import 'zcode/connection_params.dart';
@@ -32,9 +34,33 @@ class AppState extends ChangeNotifier {
   static const _kDevices = 'devices';
   static const _kLastDevice = 'last_device';
   static const _urlPrefix = 'device_url_';
+  static const _kJwt = 'zai_jwt';
+  static const _kAccess = 'zai_access';
 
   final List<SavedDevice> devices = [];
   SavedDevice? activeDevice;
+
+  String? _jwt;
+  bool loginRequired = false;
+
+  bool get hasJwt => _jwt != null && _jwt!.isNotEmpty;
+
+  /// Called by the login WebView page once AWS JWT is captured.
+  Future<void> setJwt(String value) async {
+    _jwt = value.trim();
+    loginRequired = false;
+    await _secure.write(key: _kJwt, value: _jwt!);
+    error = null;
+    notifyListeners();
+    if (activeDevice != null) await connect();
+  }
+
+  Future<void> clearJwt() async {
+    _jwt = null;
+    loginRequired = true;
+    await _secure.delete(key: _kJwt);
+    notifyListeners();
+  }
 
   ZcodeRemoteClient? _client;
   BridgeSession? _bridge;
@@ -60,6 +86,7 @@ class AppState extends ChangeNotifier {
   bool get hasOpenChat => sessionId != null || draft;
 
   Future<void> init() async {
+    _jwt = await _secure.read(key: _kJwt);
     final raw = _prefs.getString(_kDevices);
     if (raw != null) {
       try {
@@ -83,6 +110,11 @@ class AppState extends ChangeNotifier {
       );
     }
     notifyListeners();
+    // Restore the last connection on cold start: the QR link is persistent, so
+    // there is no reason to make the user tap "Переподключиться".
+    if (activeDevice != null && hasJwt) {
+      unawaited(connect());
+    }
   }
 
   Future<void> _saveDevices() async {
@@ -99,7 +131,7 @@ class AppState extends ChangeNotifier {
   static String? validateLink(String raw) {
     final parsed = RemoteConnectionParams.parse(raw);
     if (parsed == null) {
-      return 'Это не похоже на ссылку ZCode Remote (нужны sid, hash и t)';
+      return 'Это не похоже на ссылку ZCode Remote (нужен sid из свежего QR)';
     }
     return null;
   }
@@ -145,6 +177,40 @@ class AppState extends ChangeNotifier {
     await connect();
   }
 
+  /// Called by the QR scanner when it lands on a desktop bridge URL:
+  /// `http://<lan-ip>:8939/<pin>`. One-shot fetch of the same account's
+  /// credentials; the bridge closes itself after a single serve.
+  Future<void> consumeBridge(String rawUrl) async {
+    final uri = Uri.tryParse(rawUrl.trim());
+    if (uri == null || uri.host.isEmpty) {
+      error = 'Ссылка моста повреждена';
+      notifyListeners();
+      return;
+    }
+    connecting = true;
+    error = null;
+    notifyListeners();
+    try {
+      final res = await http.get(uri).timeout(const Duration(seconds: 10));
+      if (res.statusCode != 200) {
+        throw Exception('мост ответил ${res.statusCode}');
+      }
+      final data = jsonDecode(utf8.decode(res.bodyBytes));
+      final jwt = data['jwt'];
+      if (jwt is! String || jwt.length < 40) {
+        throw Exception('в ответе моста нет jwt');
+      }
+      await setJwt(jwt);
+      if (data['access'] is String && (data['access'] as String).length > 40) {
+        await _secure.write(key: _kAccess, value: data['access'] as String);
+      }
+    } catch (e) {
+      connecting = false;
+      error = _humanError(e);
+      notifyListeners();
+    }
+  }
+
   Future<void> connect() async {
     final device = activeDevice;
     if (device == null) return;
@@ -160,7 +226,32 @@ class AppState extends ChangeNotifier {
     error = null;
     notifyListeners();
 
-    final client = ZcodeRemoteClient(params);
+    // New pairing (3.17+): every relay (re)connect mints a fresh ~60 s
+    // terminal token with the account JWT. Legacy links (hash+t) keep the
+    // self-contained HMAC path and never need the account.
+    final legacy = params.passHash != null && params.passHash!.isNotEmpty;
+    if (!legacy && !hasJwt) {
+      connecting = false;
+      loginRequired = true;
+      error = 'Нужен вход в аккаунт Z.ai — он чеканит терминальный токен';
+      notifyListeners();
+      return;
+    }
+    Future<String> Function()? tokenProvider;
+    if (!legacy) {
+      tokenProvider = () async {
+        try {
+          return await ZcodeCloudApi(jwt: _jwt!).mintToken();
+        } on TokenExpired {
+          loginRequired = true;
+          error = 'Сессия Z.ai устарела — войди заново';
+          notifyListeners();
+          rethrow;
+        }
+      };
+    }
+
+    final client = ZcodeRemoteClient(params, tokenProvider: tokenProvider);
     _client = client;
     client.relay.stateListenable.addListener(_onRelayState);
     client.relay.failures.listen((failure) {
@@ -274,7 +365,7 @@ class AppState extends ChangeNotifier {
     return sub.state.list.map((e) => SessionSummary.fromMap(e.raw)).toList();
   }
 
-  bool get sessionsLoading => _sessionsSub == null || !_sessionsSub!.state.ready;
+  bool get sessionsLoading => _sessionsSub != null && !_sessionsSub!.state.ready;
   bool get connected => relayState == RelayState.paired && _bridge != null;
 
   ConversationState? get conversation => _convSub?.state;
@@ -293,7 +384,11 @@ class AppState extends ChangeNotifier {
       _convSub = sub;
       sub.state.addListener(_onConversationChanged);
       _onConversationChanged();
-      prep = await transport.prepareWorkspace();
+      // prepareWorkspace disappeared in 3.17; model/mode options also arrive
+      // in the conversation snapshot, so a failure here is not fatal.
+      try {
+        prep = await transport.prepareWorkspace();
+      } catch (_) {}
     } catch (e) {
       error = _humanError(e);
     } finally {
@@ -348,7 +443,9 @@ class AppState extends ChangeNotifier {
         final sub = await transport.subscribe(created);
         _convSub = sub;
         sub.state.addListener(_onConversationChanged);
-        prep ??= await transport.prepareWorkspace();
+        try {
+          prep ??= await transport.prepareWorkspace();
+        } catch (_) {}
       } else {
         await transport.sendText(sessionId!, body);
       }
