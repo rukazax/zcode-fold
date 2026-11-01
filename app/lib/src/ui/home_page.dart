@@ -3,17 +3,28 @@ import 'package:flutter/material.dart';
 import '../app_state.dart';
 import 'chat_pane.dart';
 import 'connect_page.dart';
+import 'file_browser_page.dart';
 import 'fold_layout.dart';
 import 'sessions_pane.dart';
 import 'theme.dart';
 
-class HomePage extends StatelessWidget {
+class HomePage extends StatefulWidget {
   const HomePage({super.key, required this.state});
 
   final AppState state;
 
   @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  /// Swipe-collapse state for the sessions pane (wide layout only).
+  bool _listCollapsed = false;
+  static const _collapsedWidth = 44.0;
+
+  @override
   Widget build(BuildContext context) {
+    final state = widget.state;
     return AnimatedBuilder(
       animation: state,
       builder: (context, _) {
@@ -22,33 +33,49 @@ class HomePage extends StatelessWidget {
         final open = state.hasOpenChat;
 
         if (wide) {
-          final leftWidth = fold.hasVerticalHinge
-              ? fold.leftPaneWidth
-              : (fold.size.width >= 1100 ? 360.0 : 320.0);
+          // ~30% of the screen for the task sidebar (a bit wider than ¼ so the
+          // desktop-style header/search fit), clamped to stay usable.
+          final share = fold.size.width * 0.30;
+          final leftWidth = (share.clamp(250.0, 480.0)).toDouble();
           final hinge = fold.hingeWidth;
           return Scaffold(
             body: SafeArea(
               child: Row(
                 children: [
-                  SizedBox(
-                    width: leftWidth,
-                    child: SessionsPane(
-                      state: state,
-                      onOpen: (s) => state.openSession(s.sessionId, title: s.title),
-                      onNew: state.startDraft,
-                      onSettings: () => _showSettings(context),
-                    ),
+                  AnimatedContainer(
+                    duration: Duration(milliseconds: 200),
+                    curve: Curves.easeOutCubic,
+                    width: _listCollapsed ? _collapsedWidth : leftWidth,
+                    child: _listCollapsed
+                        ? _collapsedRail()
+                        : GestureDetector(
+                            behavior: HitTestBehavior.translucent,
+                            onHorizontalDragEnd: (details) {
+                              final v = details.primaryVelocity ?? 0;
+                              if (v < -180) {
+                                setState(() => _listCollapsed = true);
+                              }
+                            },
+                            child: SessionsPane(
+                              state: state,
+                              onOpen: (s) => state.openSession(s.sessionId,
+                                  title: s.title),
+                              onNew: state.startDraft,
+                              onSettings: () => _showSettings(context),
+                              onCollapse: () =>
+                                  setState(() => _listCollapsed = true),
+                            ),
+                          ),
                   ),
                   Container(
                     width: hinge > 0 ? hinge + 1 : 1,
-                    color: hinge > 0 ? kBg : kBorder,
+                    color: hinge > 0 ? Pal.bg : Pal.border,
                   ),
                   Expanded(
                     child: open
                         ? ChatPane(
                             state: state,
                             onBack: state.closeChat,
-                            onSettings: () => _showSettings(context),
                           )
                         : _placeholder(),
                   ),
@@ -61,16 +88,15 @@ class HomePage extends StatelessWidget {
         return Scaffold(
           body: SafeArea(
             child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 180),
+              duration: Duration(milliseconds: 180),
               child: open
                   ? ChatPane(
-                      key: const ValueKey('chat'),
+                      key: ValueKey('chat'),
                       state: state,
                       onBack: state.closeChat,
-                      onSettings: () => _showSettings(context),
                     )
                   : SessionsPane(
-                      key: const ValueKey('list'),
+                      key: ValueKey('list'),
                       state: state,
                       onOpen: (s) => state.openSession(s.sessionId, title: s.title),
                       onNew: state.startDraft,
@@ -83,31 +109,68 @@ class HomePage extends StatelessWidget {
     );
   }
 
+  /// Narrow rail shown when the sessions pane is swiped away. Swipe right (or
+  /// tap) to bring the list back.
+  Widget _collapsedRail() {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onHorizontalDragEnd: (details) {
+        final v = details.primaryVelocity ?? 0;
+        if (v > 120) setState(() => _listCollapsed = false);
+      },
+      onTap: () => setState(() => _listCollapsed = false),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Pal.surface,
+          border: Border(right: BorderSide(color: Pal.border)),
+        ),
+        child: Column(
+          children: [
+            SizedBox(height: 10),
+            Icon(Icons.keyboard_double_arrow_right_rounded,
+                size: 18, color: Pal.muted),
+            SizedBox(height: 6),
+            Icon(Icons.forum_outlined, size: 18, color: Pal.accent),
+            SizedBox(height: 6),
+            RotatedBox(
+              quarterTurns: 3,
+              child: Text(
+                'сессии · ${widget.state.sessions.length}',
+                style: TextStyle(fontSize: 10, color: Pal.muted),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _placeholder() {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.devices_fold_outlined,
-              size: 44, color: kMuted.withValues(alpha: 0.7)),
-          const SizedBox(height: 14),
-          const Text('Выбери сессию слева',
+              size: 44, color: Pal.muted.withValues(alpha: 0.7)),
+          SizedBox(height: 14),
+          Text('Выбери сессию слева',
               style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
-          const SizedBox(height: 6),
-          const Text('Или начни новую — экран разложен, работаем в две колонки',
+          SizedBox(height: 6),
+          Text('Или начни новую — экран разложен, работаем в две колонки',
               textAlign: TextAlign.center,
-              style: TextStyle(color: kMuted, fontSize: 12.5)),
+              style: TextStyle(color: Pal.muted, fontSize: 12.5)),
         ],
       ),
     );
   }
 
   void _showSettings(BuildContext context) {
+    final state = widget.state;
     showModalBottomSheet(
       context: context,
-      backgroundColor: kSurface,
+      backgroundColor: Pal.surface,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
+      shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
       builder: (sheetContext) => AnimatedBuilder(
         animation: state,
@@ -115,7 +178,7 @@ class HomePage extends StatelessWidget {
           final fold = FoldInfo.of(context);
           return SafeArea(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
+              padding: EdgeInsets.fromLTRB(20, 14, 20, 20),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -125,13 +188,13 @@ class HomePage extends StatelessWidget {
                       width: 36,
                       height: 4,
                       decoration: BoxDecoration(
-                          color: kBorder, borderRadius: BorderRadius.circular(2)),
+                          color: Pal.border, borderRadius: BorderRadius.circular(2)),
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  const Text('Компьютеры',
+                  SizedBox(height: 16),
+                  Text('Компьютеры',
                       style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
-                  const SizedBox(height: 10),
+                  SizedBox(height: 10),
                   for (final device in state.devices)
                     ListTile(
                       contentPadding: EdgeInsets.zero,
@@ -139,16 +202,14 @@ class HomePage extends StatelessWidget {
                         device.id == state.activeDevice?.id
                             ? Icons.radio_button_checked
                             : Icons.radio_button_unchecked,
-                        color: device.id == state.activeDevice?.id
-                            ? kAccent
-                            : kMuted,
+                        color: device.id == state.activeDevice?.id ? Pal.accent : Pal.muted,
                         size: 20,
                       ),
-                      title: Text(device.name, style: const TextStyle(fontSize: 14)),
+                      title: Text(device.name, style: TextStyle(fontSize: 14)),
                       subtitle: Text(_host(device.url),
-                          style: const TextStyle(color: kMuted, fontSize: 11.5)),
+                          style: TextStyle(color: Pal.muted, fontSize: 11.5)),
                       trailing: IconButton(
-                        icon: const Icon(Icons.delete_outline, size: 18, color: kMuted),
+                        icon: Icon(Icons.delete_outline, size: 18, color: Pal.muted),
                         onPressed: () => state.removeDevice(device),
                       ),
                       onTap: () {
@@ -156,7 +217,7 @@ class HomePage extends StatelessWidget {
                         Navigator.of(sheetContext).pop();
                       },
                     ),
-                  const SizedBox(height: 6),
+                  SizedBox(height: 6),
                   OutlinedButton.icon(
                     onPressed: () {
                       Navigator.of(sheetContext).pop();
@@ -164,53 +225,132 @@ class HomePage extends StatelessWidget {
                         builder: (_) => ConnectPage(state: state),
                       ));
                     },
-                    icon: const Icon(Icons.add_rounded, size: 18),
-                    label: const Text('Подключить компьютер'),
+                    icon: Icon(Icons.add_rounded, size: 18),
+                    label: Text('Подключить компьютер'),
                   ),
-                  const Divider(height: 28),
-                  const Text('Экран',
+                  SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.of(sheetContext).pop();
+                      _showPcFilesDialog(context);
+                    },
+                    icon: Icon(Icons.folder_open_rounded, size: 18),
+                    label: Text(state.hasPcFiles
+                        ? 'Файлы ПК: ${state.bridgeFsUrl}'
+                        : 'Файлы ПК (мост)'),
+                  ),
+                  Divider(height: 28),
+                  Text('Экран',
                       style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
-                  const SizedBox(height: 6),
+                  SizedBox(height: 6),
                   Text(
                     '${fold.size.width.round()} × ${fold.size.height.round()} dp · '
                     '${fold.hasVerticalHinge ? 'вертикальный шарнир' : fold.horizontalHinge != null ? 'горизонт. шарнир' : 'без шарнира'} · '
                     '${fold.isUnfolded ? 'две колонки' : 'одна колонка'}',
-                    style: const TextStyle(color: kMuted, fontSize: 12, height: 1.5),
+                    style: TextStyle(color: Pal.muted, fontSize: 12, height: 1.5),
                   ),
-                  const SizedBox(height: 14),
+                  SizedBox(height: 14),
                   Text(
                     'Проект: ${state.workspace == null ? '—' : AppState.workspaceTitle(state.workspace!)}',
-                    style: const TextStyle(color: kMuted, fontSize: 12),
+                    style: TextStyle(color: Pal.muted, fontSize: 12),
                   ),
                   Text(
                     'Связь: ${state.relayState.name}',
-                    style: const TextStyle(color: kMuted, fontSize: 12),
+                    style: TextStyle(color: Pal.muted, fontSize: 12),
                   ),
-                  const SizedBox(height: 6),
+                  SizedBox(height: 6),
+                  Text(
+                    'Список: ${state.sessions.length} сессий · ${_listCollapsed ? 'свёрнут' : 'развёрнут'} · свайп влево/вправо',
+                    style: TextStyle(color: Pal.muted, fontSize: 12),
+                  ),
+                  SizedBox(height: 6),
                   Text(
                     'Просмотр, подключение и подтверждения — бесплатны: '
                     'токены списываются, только когда отправлена задача.',
-                    style: const TextStyle(color: kMuted, fontSize: 11.5, height: 1.45),
+                    style: TextStyle(color: Pal.muted, fontSize: 11.5, height: 1.45),
                   ),
-                  const SizedBox(height: 16),
+                  SizedBox(height: 16),
                   OutlinedButton.icon(
                     onPressed: () {
                       state.disconnect();
                       Navigator.of(sheetContext).pop();
                     },
-                    icon: const Icon(Icons.link_off_rounded, size: 18),
-                    label: const Text('Отключиться'),
+                    icon: Icon(Icons.link_off_rounded, size: 18),
+                    label: Text('Отключиться'),
                   ),
-                  const SizedBox(height: 8),
-                  const Center(
-                    child: Text('ZCode Fold 0.3.7 · прямое подключение ZCode Remote',
-                        style: TextStyle(color: kMuted, fontSize: 10.5)),
+                  SizedBox(height: 8),
+                  Center(
+                    child: Text('ZCode Fold 0.3.8 · прямое подключение ZCode Remote',
+                        style: TextStyle(color: Pal.muted, fontSize: 10.5)),
                   ),
                 ],
               ),
             ),
           );
         },
+      ),
+    );
+  }
+
+  void _showPcFilesDialog(BuildContext context) {
+    final state = widget.state;
+    final urlCtrl = TextEditingController(text: state.bridgeFsUrl ?? '');
+    final tokenCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Pal.surface,
+        title: Text('Файлы компьютера', style: TextStyle(fontSize: 16)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'На ПК: node tools/bridge.mjs --serve\n'
+              'Скрипт печатает URL и токен — вставь их сюда.',
+              style: TextStyle(fontSize: 11.5, color: Pal.muted, height: 1.4),
+            ),
+            SizedBox(height: 12),
+            TextField(
+              controller: urlCtrl,
+              style: TextStyle(fontSize: 12.5),
+              decoration: InputDecoration(
+                labelText: 'URL моста',
+                hintText: 'http://192.168.x.x:8939',
+                isDense: true,
+              ),
+            ),
+            SizedBox(height: 10),
+            TextField(
+              controller: tokenCtrl,
+              style: TextStyle(fontSize: 12.5),
+              obscureText: true,
+              decoration: InputDecoration(
+                labelText: 'Токен',
+                hintText: 'bridge-fs.token',
+                isDense: true,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              await state.setBridgeFiles(urlCtrl.text, tokenCtrl.text);
+              if (dialogContext.mounted) Navigator.pop(dialogContext);
+              if (context.mounted) {
+                Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => FileBrowserPage(state: state),
+                ));
+              }
+            },
+            child: Text('Сохранить и открыть'),
+          ),
+        ],
       ),
     );
   }

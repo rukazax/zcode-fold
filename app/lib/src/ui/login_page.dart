@@ -31,12 +31,12 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
         'https://zcode.z.ai/remote/v4';
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0xFF0B0D10))
+      ..setBackgroundColor(Color(0xFF0B0D10))
       ..setNavigationDelegate(NavigationDelegate(
         onPageFinished: (_) => _scan(),
       ))
       ..loadRequest(Uri.parse(url));
-    _poll = Timer.periodic(const Duration(milliseconds: 900), (_) => _scan());
+    _poll = Timer.periodic(Duration(milliseconds: 900), (_) => _scan());
   }
 
   @override
@@ -94,14 +94,14 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: kBg,
+      backgroundColor: Pal.bg,
       appBar: AppBar(
-        title: const Text('Вход в аккаунт Z.ai'),
+        title: Text('Вход в аккаунт Z.ai'),
         actions: [
           IconButton(
             tooltip: 'Проверить снова',
             onPressed: _scan,
-            icon: const Icon(Icons.refresh_rounded),
+            icon: Icon(Icons.refresh_rounded),
           ),
         ],
       ),
@@ -109,13 +109,13 @@ class _LoginWebViewPageState extends State<LoginWebViewPage> {
         children: [
           Expanded(child: WebViewWidget(controller: _controller)),
           Container(
-            color: kSurface,
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
-            child: const Text(
+            color: Pal.surface,
+            padding: EdgeInsets.fromLTRB(16, 10, 16, 16),
+            child: Text(
               'Выбери того же провайдера и аккаунт, что на компьютере (Z.ai или '
               'BigModel). После входа пара закроется сама — токен уйдёт только '
               'в это приложение.',
-              style: TextStyle(color: kMuted, fontSize: 12, height: 1.45),
+              style: TextStyle(color: Pal.muted, fontSize: 12, height: 1.45),
             ),
           ),
         ],

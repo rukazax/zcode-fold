@@ -31,7 +31,7 @@ class _ConnectPageState extends State<ConnectPage> {
 
   Future<void> _scan() async {
     final code = await Navigator.of(context).push<String>(
-      MaterialPageRoute(builder: (_) => const QrScanPage()),
+      MaterialPageRoute(builder: (_) => QrScanPage()),
     );
     if (code != null && code.trim().isNotEmpty) {
       _url.text = code.trim();
@@ -92,7 +92,7 @@ class _ConnectPageState extends State<ConnectPage> {
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
+            padding: EdgeInsets.all(24),
             child: ConstrainedBox(
               constraints: BoxConstraints(maxWidth: wide ? 880 : 460),
               child: wide
@@ -100,13 +100,13 @@ class _ConnectPageState extends State<ConnectPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Expanded(child: _brand()),
-                        const SizedBox(width: 32),
+                        SizedBox(width: 32),
                         Expanded(child: _form()),
                       ],
                     )
                   : Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [_brand(), const SizedBox(height: 28), _form()],
+                      children: [_brand(), SizedBox(height: 28), _form()],
                     ),
             ),
           ),
@@ -123,24 +123,24 @@ class _ConnectPageState extends State<ConnectPage> {
           width: 56,
           height: 56,
           decoration:
-              BoxDecoration(color: kAccent, borderRadius: BorderRadius.circular(16)),
+              BoxDecoration(color: Pal.accent, borderRadius: BorderRadius.circular(16)),
           alignment: Alignment.center,
-          child: const Text('Z',
+          child: Text('Z',
               style: TextStyle(
                   color: Color(0xFF06231A), fontSize: 30, fontWeight: FontWeight.w900)),
         ),
-        const SizedBox(height: 20),
-        const Text('ZCode Fold',
+        SizedBox(height: 20),
+        Text('ZCode Fold',
             style: TextStyle(
                 fontSize: 30, fontWeight: FontWeight.w800, letterSpacing: -0.8)),
-        const SizedBox(height: 8),
-        const Text(
+        SizedBox(height: 8),
+        Text(
           'Прямое подключение к штатному «Мобильному доступу» ZCode. '
           'Никаких серверов и надстроек: телефон говорит с твоим компьютером '
           'через официальный relay, как это делает мобильная веб-панель.',
-          style: TextStyle(color: kMuted, height: 1.5, fontSize: 14),
+          style: TextStyle(color: Pal.muted, height: 1.5, fontSize: 14),
         ),
-        const SizedBox(height: 20),
+        SizedBox(height: 20),
         Wrap(
           spacing: 8,
           runSpacing: 8,
@@ -152,25 +152,25 @@ class _ConnectPageState extends State<ConnectPage> {
           ],
         ),
         if (widget.state.devices.isNotEmpty) ...[
-          const SizedBox(height: 24),
-          const Text('Сохранённые компьютеры',
-              style: TextStyle(color: kMuted, fontSize: 12, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 8),
+          SizedBox(height: 24),
+          Text('Сохранённые компьютеры',
+              style: TextStyle(color: Pal.muted, fontSize: 12, fontWeight: FontWeight.w600)),
+          SizedBox(height: 8),
           ...widget.state.devices.map((device) => Card(
-                color: kSurface,
-                margin: const EdgeInsets.only(bottom: 8),
+                color: Pal.surface,
+                margin: EdgeInsets.only(bottom: 8),
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14),
-                    side: const BorderSide(color: kBorder)),
+                    side: BorderSide(color: Pal.border)),
                 child: ListTile(
-                  leading: const Icon(Icons.computer_rounded, color: kAccent),
+                  leading: Icon(Icons.computer_rounded, color: Pal.accent),
                   title: Text(device.name),
                   subtitle: Text(
                     _linkHint(device.url),
-                    style: const TextStyle(color: kMuted, fontSize: 12),
+                    style: TextStyle(color: Pal.muted, fontSize: 12),
                   ),
                   trailing: IconButton(
-                    icon: const Icon(Icons.delete_outline, size: 20, color: kMuted),
+                    icon: Icon(Icons.delete_outline, size: 20, color: Pal.muted),
                     onPressed: () => widget.state.removeDevice(device),
                   ),
                   onTap: _busy ? null : () => widget.state.selectDevice(device),
@@ -192,47 +192,47 @@ class _ConnectPageState extends State<ConnectPage> {
 
   Widget _chip(IconData icon, String label) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      padding: EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       decoration: BoxDecoration(
-        color: kSurface2,
+        color: Pal.surface2,
         borderRadius: BorderRadius.circular(9),
-        border: Border.all(color: kBorder),
+        border: Border.all(color: Pal.border),
       ),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, size: 14, color: kAccent),
-        const SizedBox(width: 6),
-        Text(label, style: const TextStyle(fontSize: 12, color: kMuted)),
+        Icon(icon, size: 14, color: Pal.accent),
+        SizedBox(width: 6),
+        Text(label, style: TextStyle(fontSize: 12, color: Pal.muted)),
       ]),
     );
   }
 
   Widget _form() {
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: kSurface,
+        color: Pal.surface,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: kBorder),
+        border: Border.all(color: Pal.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Подключить компьютер',
+          Text('Подключить компьютер',
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-          const SizedBox(height: 6),
-          const Text(
+          SizedBox(height: 6),
+          Text(
             'В ZCode на компьютере открой мобильный доступ и покажи QR-код (или '
             'скопируй ссылку). Ссылка действует, пока включён мобильный доступ.',
-            style: TextStyle(color: kMuted, fontSize: 12, height: 1.45),
+            style: TextStyle(color: Pal.muted, fontSize: 12, height: 1.45),
           ),
-          const SizedBox(height: 16),
+          SizedBox(height: 16),
           TextField(
             controller: _name,
             textInputAction: TextInputAction.next,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
                 labelText: 'Название (необязательно)', hintText: 'Мой ПК'),
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: 12),
           TextField(
             controller: _url,
             keyboardType: TextInputType.url,
@@ -251,34 +251,34 @@ class _ConnectPageState extends State<ConnectPage> {
                     setState(() => _url.text = text);
                   }
                 },
-                icon: const Icon(Icons.content_paste_rounded, size: 20),
+                icon: Icon(Icons.content_paste_rounded, size: 20),
               ),
             ),
           ),
-          const SizedBox(height: 18),
+          SizedBox(height: 18),
           Row(
             children: [
               Expanded(
                 child: FilledButton.icon(
                   onPressed: _busy ? null : _connect,
                   icon: _busy
-                      ? const SizedBox(
+                      ? SizedBox(
                           width: 16,
                           height: 16,
                           child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.login_rounded, size: 18),
+                      : Icon(Icons.login_rounded, size: 18),
                   label: Text(_busy ? 'Подключаюсь…' : 'Подключиться'),
                 ),
               ),
-              const SizedBox(width: 10),
+              SizedBox(width: 10),
               OutlinedButton.icon(
                 onPressed: _busy ? null : _scan,
-                icon: const Icon(Icons.qr_code_scanner_rounded, size: 18),
-                label: const Text('QR'),
+                icon: Icon(Icons.qr_code_scanner_rounded, size: 18),
+                label: Text('QR'),
               ),
             ],
           ),
-          const SizedBox(height: 14),
+          SizedBox(height: 14),
         Text(
           _error != null && _error!.isNotEmpty
               ? _error!
@@ -286,35 +286,35 @@ class _ConnectPageState extends State<ConnectPage> {
                   'tools\\bridge.mjs (в репо) и отсканируй его QR кнопкой «QR» '
                   '— токен аккаунта перейдёт с компьютера локально, без '
                   'логина на телефоне. Логин-кнопка ниже — запасной путь.',
-          style: const TextStyle(
+          style: TextStyle(
               color: Color(0xFFE3B341), fontSize: 12.5, height: 1.4),
         ),
-        const SizedBox(height: 14),
+        SizedBox(height: 14),
         Row(
             children: [
               Expanded(
                 child: OutlinedButton.icon(
                   onPressed: _busy ? null : _login,
-                  icon: const Icon(Icons.account_circle_rounded, size: 18),
+                  icon: Icon(Icons.account_circle_rounded, size: 18),
                   label: Text(widget.state.loginRequired
                       ? 'Войти в аккаунт Z.ai'
                       : 'Аккаунт Z.ai'),
                 ),
               ),
               if (!widget.state.loginRequired) ...[
-                const SizedBox(width: 10),
+                SizedBox(width: 10),
                 OutlinedButton(
                   onPressed: _busy ? null : () => widget.state.clearJwt(),
-                  child: const Text('Выйти'),
+                  child: Text('Выйти'),
                 ),
               ],
             ],
           ),
-          const SizedBox(height: 12),
-          const Text(
+          SizedBox(height: 12),
+          Text(
             '⚠️ Ссылка содержит ключ доступа к твоим сессиям. Не пересылай её '
             'и не публикуй скриншоты QR.',
-            style: TextStyle(color: kMuted, fontSize: 11.5, height: 1.4),
+            style: TextStyle(color: Pal.muted, fontSize: 11.5, height: 1.4),
           ),
         ],
       ),

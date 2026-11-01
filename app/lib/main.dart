@@ -50,9 +50,15 @@ class _ZCodeFoldAppState extends State<ZCodeFoldApp> with WidgetsBindingObserver
     return MaterialApp(
       title: 'ZCode Fold',
       debugShowCheckedModeBanner: false,
-      theme: buildTheme(),
-      darkTheme: buildTheme(),
-      themeMode: ThemeMode.dark,
+      theme: buildTheme(Brightness.light),
+      darkTheme: buildTheme(Brightness.dark),
+      themeMode: ThemeMode.system,
+      builder: (context, child) {
+        // Pal is a plain static read by hundreds of call sites; sync it with
+        // the resolved system brightness before painting.
+        Pal.apply(Theme.of(context).brightness);
+        return child ?? const SizedBox.shrink();
+      },
       home: AnimatedBuilder(
         animation: widget.state,
         builder: (context, _) {

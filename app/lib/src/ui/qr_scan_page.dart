@@ -93,14 +93,14 @@ class _QrScanPageState extends State<QrScanPage> {
         _hint = codes.isEmpty
             ? 'QR-код на картинке не найден. Сними экран целиком, без обрезки и без бликов.'
             : 'QR найден, но это не ссылка ZCode Remote (нет sid/hash).';
-        _hintColor = const Color(0xFFFFB4AD);
+        _hintColor = Color(0xFFFFB4AD);
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _importing = false;
         _hint = 'Не удалось разобрать картинку: $e';
-        _hintColor = const Color(0xFFFFB4AD);
+        _hintColor = Color(0xFFFFB4AD);
       });
     }
   }
@@ -110,18 +110,18 @@ class _QrScanPageState extends State<QrScanPage> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('QR-код ZCode'),
+        title: Text('QR-код ZCode'),
         backgroundColor: Colors.black,
         actions: [
           IconButton(
             tooltip: 'Фонарик',
             onPressed: () => _controller.toggleTorch(),
-            icon: const Icon(Icons.flash_on_rounded),
+            icon: Icon(Icons.flash_on_rounded),
           ),
           IconButton(
             tooltip: 'Сменить камеру',
             onPressed: () => _controller.switchCamera(),
-            icon: const Icon(Icons.cameraswitch_rounded),
+            icon: Icon(Icons.cameraswitch_rounded),
           ),
         ],
       ),
@@ -138,7 +138,7 @@ class _QrScanPageState extends State<QrScanPage> {
                       width: 240,
                       height: 240,
                       decoration: BoxDecoration(
-                        border: Border.all(color: kAccent, width: 3),
+                        border: Border.all(color: Pal.accent, width: 3),
                         borderRadius: BorderRadius.circular(26),
                       ),
                     ),
@@ -148,26 +148,26 @@ class _QrScanPageState extends State<QrScanPage> {
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 6),
+            padding: EdgeInsets.fromLTRB(20, 16, 20, 6),
             child: Row(
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: _importing || _handled ? null : _fromGallery,
                     icon: _importing
-                        ? const SizedBox(
+                        ? SizedBox(
                             width: 16,
                             height: 16,
                             child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.image_outlined, size: 18),
-                    label: const Text('QR из картинки'),
+                        : Icon(Icons.image_outlined, size: 18),
+                    label: Text('QR из картинки'),
                   ),
                 ),
               ],
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(24, 4, 24, 28),
+            padding: EdgeInsets.fromLTRB(24, 4, 24, 28),
             child: Text(
               _hint,
               textAlign: TextAlign.center,

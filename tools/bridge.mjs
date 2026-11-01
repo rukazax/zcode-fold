@@ -1,15 +1,17 @@
-// ZCode Fold — desktop credential bridge.
+// ZCode Fold — desktop bridge.
 //
-// Serves the desktop's own Z.ai JWT to a paired phone over the local network
-// with a one-time PIN. The phone then mints its own terminal tokens, and
-// everything relay-side works with the same account as on the computer —
-// without any login inside the phone.
+// Two jobs, one server:
+//  1) handing the desktop Z.ai account token to the phone over the LAN
+//     (one-time PIN, the bridge exits right after);
+//  2) (--serve) a long-lived read-only file browser for the project, so the
+//     phone can list/open files from this computer without extra tooling.
 //
-// Usage:  node bridge.mjs
-// Prints: http://<lan-ip>:8939/<pin>  plus a QR PNG (bridge.png)
-// The PIN is randomly generated per run; the server exits after one fetch
-// (or Ctrl+C). Same trust boundary as the ZCode QR: scan == hand over the
-// desktop account to that phone on this LAN only.
+// Usage:
+//   node bridge.mjs                      one-shot credentials handover
+//   node bridge.mjs --serve [--root DIR] long-lived file API (token in
+//                                        ./bridge-fs.token, printed at start)
+//
+// Security: LAN only, bearer token, paths are restricted to the root folder.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -18,6 +20,12 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import QRCode from 'qrcode';
+
+const args = process.argv.slice(2);
+const serveMode = args.includes('--serve');
+const rootArg = args.includes('--root') ? args[args.indexOf('--root') + 1] : null;
+const ROOT = path.resolve(rootArg ?? process.cwd());
+const PORT = 8939;
 
 function dec(raw) {
   const s = String(raw).replace(/^enc:v1:/, '').split('.');
@@ -33,22 +41,6 @@ function dec(raw) {
   return Buffer.concat([d.update(data), d.final()]).toString('utf8');
 }
 
-const creds = JSON.parse(
-  fs.readFileSync(path.join(os.homedir(), '.zcode', 'v2', 'credentials.json'), 'utf8'),
-);
-let provider = 'zai';
-try { provider = dec(creds['oauth:active_provider']) || 'zai'; } catch {}
-const jwt = dec(creds['zcodejwttoken']);
-const access = (() => {
-  try { return dec(creds['oauth:zai:access_token']); } catch { return ''; }
-})();
-const userInfo = (() => {
-  try { return dec(creds['oauth:zai:user_info']); } catch { return ''; }
-})();
-
-const pin = crypto.randomBytes(5).toString('hex');
-const payload = JSON.stringify({ v: 1, provider, jwt, access, user: userInfo });
-
 function lanIp() {
   const ifaces = Object.values(os.networkInterfaces()).flat();
   const v4 = ifaces.find(
@@ -57,29 +49,199 @@ function lanIp() {
   return v4?.address ?? '127.0.0.1';
 }
 
-const server = http.createServer((req, res) => {
-  if (req.url !== `/${pin}`) {
-    res.writeHead(404).end('bridge: bad pin');
-    return;
-  }
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(payload);
-  console.log(`✅ токен отдан и мост закрыт`);
-  setTimeout(() => process.exit(0), 500);
-});
+const LAN = lanIp();
 
-server.listen(8939, '0.0.0.0', async () => {
-  const url = `http://${lanIp()}:8939/${pin}`;
-  const qrPng = path.resolve('bridge-qr.png');
-  await QRCode.toFile(qrPng, url, { margin: 2, scale: 8 });
-  console.log('');
-  console.log('  ZCode Fold — мост: креды аккаунта с этого ПК на телефон');
-  console.log('  ─────────────────────────────────────────────');
-  console.log(`  URL     : ${url}`);
-  console.log(`  QR      : ${qrPng}`);
-  console.log('  Действие: отсканируй QR приложением (кнопка «QR») →');
-  console.log('            приложение заберёт токен и подключится.');
-  console.log('  Срок    : одноразовый PIN; после передачи мост закрывается.');
-  console.log('  ─────────────────────────────────────────────');
-  console.log('  CTRL+C — отменить мост.');
-});
+// ---------------------------------------------------------------------------
+// Mode 2: long-lived read-only file API (--serve)
+// ---------------------------------------------------------------------------
+
+function safePath(requested) {
+  if (!requested) return ROOT;
+  const resolved = path.resolve(ROOT, requested);
+  const rel = path.relative(ROOT, resolved);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  return resolved;
+}
+
+function startFileServer(token) {
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, `http://${LAN}:${PORT}`);
+    if (req.headers.authorization !== `Bearer ${token}`) {
+      res.writeHead(401).end('bridge: bad token');
+      return;
+    }
+    if (url.pathname === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, root: ROOT, name: os.hostname() }));
+      return;
+    }
+    if (url.pathname === '/fs/list') {
+      const target = safePath(url.searchParams.get('path') ?? '');
+      if (!target) {
+        res.writeHead(403).end('outside root');
+        return;
+      }
+      try {
+        const entries = fs
+          .readdirSync(target, { withFileTypes: true })
+          .filter((e) => !e.name.startsWith('.'))
+          .map((e) => {
+            const full = path.join(target, e.name);
+            let size = 0;
+            try {
+              if (e.isFile()) size = fs.statSync(full).size;
+            } catch {}
+            return {
+              name: e.name,
+              path: full,
+              dir: e.isDirectory(),
+              size,
+            };
+          })
+          .sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1))
+          .slice(0, 500);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ path: target, root: ROOT, entries }));
+      } catch (e) {
+        res.writeHead(400).end(`list failed: ${e.message}`);
+      }
+      return;
+    }
+    if (url.pathname === '/fs/read') {
+      const target = safePath(url.searchParams.get('path') ?? '');
+      if (!target) {
+        res.writeHead(403).end('outside root');
+        return;
+      }
+      try {
+        const stat = fs.statSync(target);
+        if (!stat.isFile()) {
+          res.writeHead(400).end('not a file');
+          return;
+        }
+        if (stat.size > 8 * 1024 * 1024) {
+          res.writeHead(413).end('file too large (8 MB)');
+          return;
+        }
+        const ext = path.extname(target).toLowerCase();
+        const types = {
+          '.png': 'image/png',
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.gif': 'image/gif',
+          '.webp': 'image/webp',
+          '.svg': 'image/svg+xml',
+          '.pdf': 'application/pdf',
+          '.json': 'application/json',
+        };
+        res.writeHead(200, {
+          'Content-Type': types[ext] ?? 'application/octet-stream',
+          'Content-Length': stat.size,
+        });
+        fs.createReadStream(target).pipe(res);
+      } catch (e) {
+        res.writeHead(404).end(`read failed: ${e.message}`);
+      }
+      return;
+    }
+    res.writeHead(404).end('bridge: unknown path');
+  });
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log('');
+    console.log('  ZCode Fold — файловый мост (только чтение)');
+    console.log('  ─────────────────────────────────────────────');
+    console.log(`  URL   : http://${LAN}:${PORT}`);
+    console.log(`  Токен : ${token}`);
+    console.log(`  Корень: ${ROOT}`);
+    console.log('  В приложении: Настройки → «Файлы ПК», укажи URL и токен.');
+    console.log('  ─────────────────────────────────────────────');
+    console.log('  CTRL+C — остановить.');
+  });
+  return server;
+}
+
+// ---------------------------------------------------------------------------
+// Mode 1: one-shot credentials handover
+// ---------------------------------------------------------------------------
+
+function startCredentialBridge() {
+  const creds = JSON.parse(
+    fs.readFileSync(path.join(os.homedir(), '.zcode', 'v2', 'credentials.json'), 'utf8'),
+  );
+  let provider = 'zai';
+  try {
+    provider = dec(creds['oauth:active_provider']) || 'zai';
+  } catch {}
+  const jwt = dec(creds['zcodejwttoken']);
+  const access = (() => {
+    try {
+      return dec(creds['oauth:zai:access_token']);
+    } catch {
+      return '';
+    }
+  })();
+  const userInfo = (() => {
+    try {
+      return dec(creds['oauth:zai:user_info']);
+    } catch {
+      return '';
+    }
+  })();
+
+  const pin = crypto.randomBytes(5).toString('hex');
+  const fsTokenFile = path.resolve('bridge-fs.token');
+  let fsToken = '';
+  if (fs.existsSync(fsTokenFile)) {
+    fsToken = fs.readFileSync(fsTokenFile, 'utf8').trim();
+  }
+  const payload = JSON.stringify({
+    v: 1,
+    provider,
+    jwt,
+    access,
+    user: userInfo,
+    bridgeUrl: `http://${LAN}:${PORT}`,
+    fsToken,
+  });
+
+  const server = http.createServer((req, res) => {
+    if (req.url !== `/${pin}`) {
+      res.writeHead(404).end('bridge: bad pin');
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(payload);
+    console.log('✅ токен отдан и мост закрыт');
+    setTimeout(() => process.exit(0), 500);
+  });
+
+  server.listen(PORT, '0.0.0.0', async () => {
+    const url = `http://${LAN}:${PORT}/${pin}`;
+    const qrPng = path.resolve('bridge-qr.png');
+    await QRCode.toFile(qrPng, url, { margin: 2, scale: 8 });
+    console.log('');
+    console.log('  ZCode Fold — мост: креды аккаунта с этого ПК на телефон');
+    console.log('  ─────────────────────────────────────────────');
+    console.log(`  URL     : ${url}`);
+    console.log(`  QR      : ${qrPng}`);
+    console.log('  Действие: отсканируй QR приложением (кнопка «QR») →');
+    console.log('            приложение заберёт токен и подключится.');
+    console.log('  Срок    : одноразовый PIN; после передачи мост закрывается.');
+    console.log('  ─────────────────────────────────────────────');
+    console.log('  CTRL+C — отменить мост.');
+  });
+}
+
+if (serveMode) {
+  const tokenFile = path.resolve('bridge-fs.token');
+  let token = fs.existsSync(tokenFile)
+    ? fs.readFileSync(tokenFile, 'utf8').trim()
+    : '';
+  if (!token) {
+    token = crypto.randomBytes(16).toString('base64url');
+    fs.writeFileSync(tokenFile, token, 'utf8');
+  }
+  startFileServer(token);
+} else {
+  startCredentialBridge();
+}

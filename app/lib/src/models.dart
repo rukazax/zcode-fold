@@ -1,4 +1,100 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+
+/// One selectable LLM from the desktop's provider registry.
+class ModelOption {
+  const ModelOption({
+    required this.providerId,
+    required this.providerName,
+    required this.modelId,
+    this.modelName,
+    this.description,
+    this.enabled = true,
+  });
+
+  final String providerId;
+  final String providerName;
+  final String modelId;
+  final String? modelName;
+  final String? description;
+  final bool enabled;
+
+  String get value => '$providerId/$modelId';
+  String get label => (modelName?.trim().isNotEmpty ?? false) ? modelName! : modelId;
+
+  Map<String, dynamic> toJson() => {
+        'providerId': providerId,
+        'providerName': providerName,
+        'modelId': modelId,
+        'modelName': modelName,
+        'description': description,
+        'enabled': enabled,
+      };
+
+  static ModelOption? fromJson(Map<String, dynamic> json) {
+    final providerId = (json['providerId'] ?? json['provider_id'] ?? '').toString();
+    final modelId = (json['modelId'] ?? json['model_id'] ?? json['id'] ?? '').toString();
+    if (providerId.isEmpty || modelId.isEmpty) return null;
+    return ModelOption(
+      providerId: providerId,
+      providerName: (json['providerName'] ?? json['provider_name'] ?? providerId).toString(),
+      modelId: modelId,
+      modelName: json['modelName'] as String? ?? json['name'] as String?,
+      description: json['description'] as String?,
+      enabled: json['enabled'] != false,
+    );
+  }
+}
+
+/// A file picked on the phone, waiting to be uploaded to the desktop session.
+class PendingAttachment {
+  PendingAttachment({
+    required this.fileName,
+    required this.mime,
+    required this.bytes,
+  });
+
+  final String fileName;
+  final String mime;
+  final Uint8List bytes;
+  double upload = 0;
+
+  bool get isImage => mime.startsWith('image/');
+}
+
+/// One entry of the desktop filesystem browser (served by the LAN bridge).
+class PcFileEntry {
+  const PcFileEntry({
+    required this.name,
+    required this.path,
+    required this.isDir,
+    this.size = 0,
+  });
+
+  final String name;
+  final String path;
+  final bool isDir;
+  final int size;
+
+  static PcFileEntry fromJson(Map<String, dynamic> json, String parent) {
+    final name = '${json['name'] ?? ''}';
+    final isDir = json['dir'] == true || json['kind'] == 'dir';
+    final path = '${json['path'] ?? _join(parent, name)}';
+    return PcFileEntry(
+      name: name,
+      path: path,
+      isDir: isDir,
+      size: (json['size'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  static String _join(String parent, String name) {
+    if (parent.endsWith('/') || parent.endsWith('\\')) return '$parent$name';
+    final sep = parent.contains('\\') ? '\\' : '/';
+    return '$parent$sep$name';
+  }
+}
 
 /// A saved ZCode desktop pairing (the QR/link from the desktop app).
 class SavedDevice {

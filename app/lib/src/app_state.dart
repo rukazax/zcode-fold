@@ -36,6 +36,8 @@ class AppState extends ChangeNotifier {
   static const _urlPrefix = 'device_url_';
   static const _kJwt = 'zai_jwt';
   static const _kAccess = 'zai_access';
+  static const _kBridgeUrl = 'bridge_fs_url';
+  static const _kBridgeToken = 'bridge_fs_token';
 
   final List<SavedDevice> devices = [];
   SavedDevice? activeDevice;
@@ -72,6 +74,18 @@ class AppState extends ChangeNotifier {
   Map<String, dynamic>? workspace;
   WorkspacePrep? prep;
 
+  /// LLM catalog for the chat picker (desktop provider registry).
+  List<ModelOption> modelCatalog = const [];
+  bool modelCatalogLoading = false;
+  String? modelCatalogError;
+
+  /// Model chosen before the first message of a new chat.
+  String? draftModelValue;
+  String? draftThought;
+
+  /// Pinned session ids (local, per desktop).
+  final Set<String> pinnedSessions = {};
+
   RelayState relayState = RelayState.idle;
   String? relayError;
   bool connecting = false;
@@ -87,6 +101,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> init() async {
     _jwt = await _secure.read(key: _kJwt);
+    bridgeFsUrl = _prefs.getString(_kBridgeUrl);
     final raw = _prefs.getString(_kDevices);
     if (raw != null) {
       try {
@@ -108,6 +123,7 @@ class AppState extends ChangeNotifier {
         (d) => d.id == last,
         orElse: () => devices.first,
       );
+      _loadPins();
     }
     notifyListeners();
     // Restore the last connection on cold start: the QR link is persistent, so
@@ -115,6 +131,36 @@ class AppState extends ChangeNotifier {
     if (activeDevice != null && hasJwt) {
       unawaited(connect());
     }
+  }
+
+  // ---------------------------------------------------------------- pins
+
+  String get _pinsKey => 'pinned_${activeDevice?.id ?? 'none'}';
+
+  void _loadPins() {
+    pinnedSessions.clear();
+    final raw = _prefs.getString(_pinsKey);
+    if (raw == null) return;
+    try {
+      final list = jsonDecode(raw);
+      if (list is List) {
+        for (final id in list.whereType<String>()) {
+          pinnedSessions.add(id);
+        }
+      }
+    } catch (_) {}
+  }
+
+  bool isPinned(String sessionId) => pinnedSessions.contains(sessionId);
+
+  Future<void> togglePin(String sessionId) async {
+    if (pinnedSessions.contains(sessionId)) {
+      pinnedSessions.remove(sessionId);
+    } else {
+      pinnedSessions.add(sessionId);
+    }
+    await _prefs.setString(_pinsKey, jsonEncode(pinnedSessions.toList()));
+    notifyListeners();
   }
 
   Future<void> _saveDevices() async {
@@ -172,6 +218,8 @@ class AppState extends ChangeNotifier {
     if (activeDevice?.id == device.id && _client != null) return;
     await _teardown();
     activeDevice = device;
+    _loadPins();
+    modelCatalog = const [];
     await _prefs.setString(_kLastDevice, device.id);
     notifyListeners();
     await connect();
@@ -204,11 +252,84 @@ class AppState extends ChangeNotifier {
       if (data['access'] is String && (data['access'] as String).length > 40) {
         await _secure.write(key: _kAccess, value: data['access'] as String);
       }
+      if (data['bridgeUrl'] is String) {
+        await setBridgeFiles(
+          data['bridgeUrl'] as String,
+          (data['fsToken'] as String?) ?? '',
+        );
+      }
     } catch (e) {
       connecting = false;
       error = _humanError(e);
       notifyListeners();
     }
+  }
+
+  // ------------------------------------------------------- PC files (bridge)
+
+  String? bridgeFsUrl;
+
+  Future<void> setBridgeFiles(String url, String token) async {
+    bridgeFsUrl = url.trim().isEmpty ? null : url.trim().replaceAll(RegExp(r'/+$'), '');
+    if (token.trim().isNotEmpty) {
+      await _secure.write(key: _kBridgeToken, value: token.trim());
+    }
+    if (bridgeFsUrl != null) {
+      await _prefs.setString(_kBridgeUrl, bridgeFsUrl!);
+    }
+    notifyListeners();
+  }
+
+  Future<String?> get _bridgeToken => _secure.read(key: _kBridgeToken);
+
+  bool get hasPcFiles =>
+      bridgeFsUrl != null && bridgeFsUrl!.isNotEmpty;
+
+  Future<Map<String, dynamic>> pcHealth() async {
+    final url = bridgeFsUrl;
+    final token = await _bridgeToken;
+    if (url == null || token == null) throw Exception('Мост файлов не настроен');
+    final res = await http
+        .get(Uri.parse('$url/health'), headers: {'Authorization': 'Bearer $token'})
+        .timeout(const Duration(seconds: 8));
+    if (res.statusCode != 200) throw Exception('мост ответил ${res.statusCode}');
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+  }
+
+  Future<List<PcFileEntry>> pcList(String? path) async {
+    final url = bridgeFsUrl;
+    final token = await _bridgeToken;
+    if (url == null || token == null) throw Exception('Мост файлов не настроен');
+    final uri = Uri.parse('$url/fs/list').replace(
+      queryParameters: path == null ? null : {'path': path},
+    );
+    final res = await http
+        .get(uri, headers: {'Authorization': 'Bearer $token'})
+        .timeout(const Duration(seconds: 12));
+    if (res.statusCode != 200) {
+      throw Exception(utf8.decode(res.bodyBytes));
+    }
+    final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    final entries = (data['entries'] as List? ?? const [])
+        .whereType<Map>()
+        .map((m) => PcFileEntry.fromJson(
+              m.cast<String, dynamic>(),
+              (data['path'] ?? '') as String,
+            ))
+        .toList();
+    return entries;
+  }
+
+  Future<Uint8List> pcRead(String path) async {
+    final url = bridgeFsUrl;
+    final token = await _bridgeToken;
+    if (url == null || token == null) throw Exception('Мост файлов не настроен');
+    final uri = Uri.parse('$url/fs/read').replace(queryParameters: {'path': path});
+    final res = await http
+        .get(uri, headers: {'Authorization': 'Bearer $token'})
+        .timeout(const Duration(seconds: 20));
+    if (res.statusCode != 200) throw Exception(utf8.decode(res.bodyBytes));
+    return res.bodyBytes;
   }
 
   Future<void> connect() async {
@@ -349,6 +470,9 @@ class AppState extends ChangeNotifier {
       _sessionsSub = sub;
       sub.state.addListener(_onSessionsChanged);
       _onSessionsChanged();
+      modelCatalog = _readCachedCatalog();
+      notifyListeners();
+      unawaited(loadModelCatalog());
     } catch (e) {
       error = _humanError(e);
       notifyListeners();
@@ -397,7 +521,17 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  bool _cfgDumped = false;
+
   void _onConversationChanged() {
+    final snap = _convSub?.state.snapshot;
+    if (!_cfgDumped && snap != null) {
+      _cfgDumped = true;
+      try {
+        debugPrint('FOLD_KEYS ${snap.keys.join(",")}');
+        debugPrint('FOLD_CFG ${jsonEncode(snap['config'])}');
+      } catch (_) {}
+    }
     notifyListeners();
   }
 
@@ -416,6 +550,7 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _disposeSession() async {
+    _cfgDumped = false;
     final sub = _convSub;
     _convSub = null;
     if (sub != null) {
@@ -427,33 +562,192 @@ class AppState extends ChangeNotifier {
     prep = null;
   }
 
-  Future<void> send(String text) async {
+  Future<void> send(
+    String text, {
+    String? heldQueueDisposition,
+    List<PendingAttachment> attachments = const [],
+  }) async {
     final transport = _transport;
     final body = text.trim();
-    if (transport == null || body.isEmpty || sending) return;
+    if (transport == null) return;
+    if (body.isEmpty && attachments.isEmpty) return;
+    if (sending) return;
     sending = true;
     notifyListeners();
     try {
       if (sessionId == null) {
+        Map<String, dynamic>? config;
+        final draftModel = draftModelValue;
+        if (draftModel != null && draftModel.contains('/')) {
+          final idx = draftModel.lastIndexOf('/');
+          config = {
+            'provider': draftModel.substring(0, idx),
+            'model': draftModel.substring(idx + 1),
+            if (draftThought != null) 'thought': draftThought,
+          };
+        }
+        // Attachments need a live subscription before upload, so the first
+        // message goes as a follow-up command in that case.
         final created = await transport.createSession(
           workspaceKey,
-          firstText: body,
+          firstText: attachments.isEmpty ? body : null,
+          config: config,
         );
         sessionId = created;
+        draftModelValue = null;
+        draftThought = null;
         final sub = await transport.subscribe(created);
         _convSub = sub;
         sub.state.addListener(_onConversationChanged);
         try {
           prep ??= await transport.prepareWorkspace();
         } catch (_) {}
+        if (attachments.isNotEmpty) {
+          final descriptors = await _uploadAttachments(attachments);
+          await transport.sendText(
+            created,
+            body,
+            attachments: descriptors,
+            heldQueueDisposition: heldQueueDisposition,
+          );
+        }
       } else {
-        await transport.sendText(sessionId!, body);
+        final descriptors = await _uploadAttachments(attachments);
+        await transport.sendText(
+          sessionId!,
+          body,
+          attachments: descriptors.isEmpty ? null : descriptors,
+          heldQueueDisposition: heldQueueDisposition,
+        );
       }
       error = null;
     } catch (e) {
       error = _humanError(e);
     } finally {
       sending = false;
+      notifyListeners();
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _uploadAttachments(
+      List<PendingAttachment> files) async {
+    final transport = _transport;
+    final id = sessionId;
+    if (transport == null || id == null || files.isEmpty) return const [];
+    final out = <Map<String, dynamic>>[];
+    for (final file in files) {
+      final descriptor = await transport.attachmentPut(
+        id,
+        fileName: file.fileName,
+        mime: file.mime,
+        bytes: file.bytes,
+        onProgress: (p) {
+          file.upload = p;
+          notifyListeners();
+        },
+      );
+      out.add(descriptor);
+    }
+    return out;
+  }
+
+  /// Reads an attachment (image/file) from the desktop session.
+  Future<Uint8List?> readAttachment(String ref) async {
+    final transport = _transport;
+    final id = sessionId;
+    if (transport == null || id == null) return null;
+    try {
+      final result = await transport.attachmentRead(id, ref: ref);
+      return result.bytes;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ------------------------------------------------- queue / follow-up
+
+  List<Map<String, dynamic>> get queueItems =>
+      conversation?.queueItems ?? const [];
+
+  bool get autoDrain => conversation?.autoDrain ?? true;
+
+  String get followupMode =>
+      conversation?.config?['followupMode']?.toString() ?? 'queue';
+
+  /// `startNow | enqueue | guide | reject | choice` from the snapshot.
+  String get inputRoutingMode =>
+      conversation?.inputRoutingMode ?? 'startNow';
+
+  bool get turnRunning => conversation?.isRunning == true;
+
+  Future<void> sendQueuedNow(String queueItemId) async {
+    final transport = _transport;
+    final id = sessionId;
+    if (transport == null || id == null) return;
+    conversation?.optimisticRemoveQueueItem(queueItemId);
+    notifyListeners();
+    try {
+      await transport.sendQueuedNow(id, queueItemId);
+    } catch (e) {
+      error = _humanError(e);
+      notifyListeners();
+    }
+  }
+
+  Future<void> editQueueItem(String queueItemId, String text) async {
+    final transport = _transport;
+    final id = sessionId;
+    if (transport == null || id == null || text.trim().isEmpty) return;
+    try {
+      await transport.editQueueItem(id, queueItemId, text.trim());
+    } catch (e) {
+      error = _humanError(e);
+      notifyListeners();
+    }
+  }
+
+  Future<void> deleteQueueItem(String queueItemId) async {
+    final transport = _transport;
+    final id = sessionId;
+    if (transport == null || id == null) return;
+    conversation?.optimisticRemoveQueueItem(queueItemId);
+    notifyListeners();
+    try {
+      await transport.deleteQueueItem(id, queueItemId);
+    } catch (e) {
+      error = _humanError(e);
+      notifyListeners();
+    }
+  }
+
+  Future<void> setAutoDrain(bool value) async {
+    final transport = _transport;
+    final id = sessionId;
+    if (transport == null || id == null) return;
+    conversation?.optimisticPatch({
+      'queue': {...?conversation?.queue, 'autoDrain': value},
+    });
+    notifyListeners();
+    try {
+      await transport.setAutoDrain(id, value);
+    } catch (e) {
+      error = _humanError(e);
+      notifyListeners();
+    }
+  }
+
+  Future<void> setFollowupMode(String mode) async {
+    final transport = _transport;
+    final id = sessionId;
+    if (transport == null || id == null) return;
+    conversation?.optimisticPatch({
+      'config': {...?conversation?.config, 'followupMode': mode},
+    });
+    notifyListeners();
+    try {
+      await transport.setFollowupMode(id, mode);
+    } catch (e) {
+      error = _humanError(e);
       notifyListeners();
     }
   }
@@ -485,14 +779,128 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// The catalog: desktop `model-provider.getAll` (providers + their models).
+  Future<void> loadModelCatalog({bool refresh = false}) async {
+    final bridge = _bridge;
+    if (bridge == null) {
+      modelCatalogError = 'Нет соединения с компьютером';
+      notifyListeners();
+      return;
+    }
+    if (modelCatalogLoading) return;
+    if (!refresh && modelCatalog.isNotEmpty) return;
+    modelCatalogLoading = true;
+    modelCatalogError = null;
+    notifyListeners();
+    try {
+      final res = await bridge.channels.call(
+        'model-provider',
+        'getAll',
+        const [],
+      );
+      final parsed = _parseProviders(res);
+      if (parsed.isNotEmpty) {
+        modelCatalog = parsed;
+        await _cacheCatalog(parsed);
+      } else if (modelCatalog.isEmpty) {
+        modelCatalogError = 'Компьютер не вернул список моделей';
+      }
+    } catch (e) {
+      if (modelCatalog.isEmpty) {
+        final cached = _readCachedCatalog();
+        if (cached.isNotEmpty) {
+          modelCatalog = cached;
+        } else {
+          modelCatalogError = _humanError(e);
+        }
+      }
+    } finally {
+      modelCatalogLoading = false;
+      notifyListeners();
+    }
+  }
+
+  List<ModelOption> _parseProviders(dynamic res) {
+    final list = res is List
+        ? res
+        : (res is Map && res['providers'] is List ? res['providers'] as List : const []);
+    final out = <ModelOption>[];
+    for (final p in list.whereType<Map>()) {
+      final providerId = '${p['id'] ?? p['providerId'] ?? ''}'.trim();
+      if (providerId.isEmpty || p['enabled'] == false) continue;
+      final providerName = '${p['name'] ?? providerId}'.trim();
+      final models = p['models'];
+      if (models is! List) continue;
+      for (final m in models) {
+        if (m is String && m.trim().isNotEmpty) {
+          out.add(ModelOption(
+            providerId: providerId,
+            providerName: providerName,
+            modelId: m.trim(),
+          ));
+        } else if (m is Map) {
+          final modelId =
+              '${m['id'] ?? m['modelId'] ?? m['model_id'] ?? m['name'] ?? ''}'.trim();
+          if (modelId.isEmpty) continue;
+          out.add(ModelOption(
+            providerId: providerId,
+            providerName: providerName,
+            modelId: modelId,
+            modelName: (m['displayName'] ?? m['name'])?.toString(),
+            description: m['description'] as String?,
+          ));
+        }
+      }
+    }
+    return out;
+  }
+
+  String get _catalogKey =>
+      'model_catalog_${Uri.encodeComponent(workspaceKey)}';
+
+  Future<void> _cacheCatalog(List<ModelOption> catalog) async {
+    await _prefs.setString(
+      _catalogKey,
+      jsonEncode(catalog.map((m) => m.toJson()).toList()),
+    );
+  }
+
+  List<ModelOption> _readCachedCatalog() {
+    final raw = _prefs.getString(_catalogKey);
+    if (raw == null) return const [];
+    try {
+      final list = jsonDecode(raw);
+      if (list is! List) return const [];
+      return list
+          .whereType<Map>()
+          .map((m) => ModelOption.fromJson(m.cast<String, dynamic>()))
+          .whereType<ModelOption>()
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
   Future<void> setModel(String value, {String? thought}) async {
-    final transport = _transport;
-    final id = sessionId;
-    final state = conversation;
-    if (transport == null || id == null || state == null) return;
     final idx = value.lastIndexOf('/');
     final provider = idx > 0 ? value.substring(0, idx) : value;
     final model = idx > 0 ? value.substring(idx + 1) : value;
+    await setModelParts(provider, model, thought: thought);
+  }
+
+  /// Explicit provider+model switch (desktop semantics). Falls back to saving
+  /// a draft choice when called before the first message of a new chat.
+  Future<void> setModelParts(String provider, String model,
+      {String? thought}) async {
+    final transport = _transport;
+    final id = sessionId;
+    final state = conversation;
+    if (transport == null || id == null || state == null) {
+      draftModelValue = '$provider/$model';
+      if (thought != null) draftThought = thought;
+      notifyListeners();
+      return;
+    }
     final chosenThought = thought ??
         (state.currentThought.isNotEmpty
             ? state.currentThought
@@ -512,10 +920,22 @@ class AppState extends ChangeNotifier {
           'thought': chosenThought,
         },
       });
+      draftModelValue = null;
+      draftThought = null;
     } catch (e) {
       error = _humanError(e);
       notifyListeners();
     }
+  }
+
+  String? get currentModelValue {
+    final cfg = conversation?.config;
+    final provider = cfg?['provider']?.toString();
+    final model = cfg?['model']?.toString();
+    if (model != null && model.isNotEmpty) {
+      return provider != null && provider.isNotEmpty ? '$provider/$model' : model;
+    }
+    return draftModelValue;
   }
 
   Future<void> resolveInteraction(

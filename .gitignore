@@ -17,3 +17,6 @@ tools/bridge-qr.png
 bridge-qr.png
 .jwt
 .oauth-stack.json
+
+tools/serve.log
+tools/bridge-fs.token
