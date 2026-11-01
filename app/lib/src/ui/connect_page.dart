@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import 'fold_layout.dart';
@@ -209,9 +210,20 @@ class _ConnectPageState extends State<ConnectPage> {
             autocorrect: false,
             minLines: 1,
             maxLines: 3,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'Ссылка или QR',
               hintText: 'https://zcode.z.ai/remote/v4?sid=…&hash=…&t=…',
+              suffixIcon: IconButton(
+                tooltip: 'Вставить из буфера',
+                onPressed: () async {
+                  final data = await Clipboard.getData(Clipboard.kTextPlain);
+                  final text = data?.text?.trim();
+                  if (text != null && text.isNotEmpty) {
+                    setState(() => _url.text = text);
+                  }
+                },
+                icon: const Icon(Icons.content_paste_rounded, size: 20),
+              ),
             ),
           ),
           if (_error != null) ...[

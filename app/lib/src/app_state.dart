@@ -16,6 +16,13 @@ import 'zcode/zcode_client.dart';
 /// Flow: QR/link (`https://zcode.z.ai/remote/v4?sid=…&hash=…`) → relay WS →
 /// HMAC pairing → bootstrap workspaces → workspace bridge → Conversation V4
 /// subscription. No hub, no extra server: the desktop app is the backend.
+///
+/// Token policy: everything the app does on its own — pairing, bootstrap,
+/// workspace bridge, sessions-index and conversation subscriptions (all with
+/// `runtimePolicy: existing-only`), row reads, model/mode switches, approvals —
+/// is relay RPC, not agent turns. The GLM model is billed ONLY when a prompt
+/// is explicitly sent via [send] / `createSession`; nothing in this class
+/// ever triggers a turn on its own.
 class AppState extends ChangeNotifier {
   AppState(this._prefs, this._secure);
 

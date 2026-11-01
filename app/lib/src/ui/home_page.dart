@@ -186,6 +186,12 @@ class HomePage extends StatelessWidget {
                     'Связь: ${state.relayState.name}',
                     style: const TextStyle(color: kMuted, fontSize: 12),
                   ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Просмотр, подключение и подтверждения — бесплатны: '
+                    'токены списываются, только когда отправлена задача.',
+                    style: const TextStyle(color: kMuted, fontSize: 11.5, height: 1.45),
+                  ),
                   const SizedBox(height: 16),
                   OutlinedButton.icon(
                     onPressed: () {
@@ -197,7 +203,7 @@ class HomePage extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   const Center(
-                    child: Text('ZCode Fold 0.2.0 · прямое подключение ZCode Remote',
+                    child: Text('ZCode Fold 0.2.1 · прямое подключение ZCode Remote',
                         style: TextStyle(color: kMuted, fontSize: 10.5)),
                   ),
                 ],
