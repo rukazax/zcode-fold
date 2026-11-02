@@ -395,6 +395,72 @@ class ConversationTransport {
   Future<dynamic> modelSelectionView() =>
       _channels.call(Channels.modelSelection, 'getView', []);
 
+  // ------------------------------------------------- terminal (PC bridge)
+  // The desktop terminal service is reachable over the same relay. The app
+  // uses it to start the read-only file bridge on the computer with no user
+  // input (the command is not an agent turn and costs no tokens).
+
+  Future<int> terminalCreate(String cwd) async {
+    final res = await _channels.call(Channels.terminal, 'create', [
+      {'cols': 120, 'rows': 30, 'cwd': cwd},
+    ]);
+    final id = res is Map ? res['id'] : null;
+    if (id is! num) {
+      throw StateError('terminal.create: no id in $res');
+    }
+    return id.toInt();
+  }
+
+  void Function() terminalListen(
+    int id, {
+    required void Function(String data) onData,
+    void Function(int? exitCode)? onExit,
+  }) {
+    String decode(dynamic event) {
+      if (event is String) return event;
+      if (event is List<int>) return utf8.decode(event, allowMalformed: true);
+      if (event is Map) {
+        final value = event['data'] ?? event['chunk'] ?? event['text'];
+        if (value is String) return value;
+        if (value is List<int>) return utf8.decode(value, allowMalformed: true);
+      }
+      return '$event';
+    }
+
+    final offData = _channels.addEventListener(
+      Channels.terminal,
+      'onDynamicData',
+      (event) => onData(decode(event)),
+      arg: id,
+    );
+    final offExit = onExit == null
+        ? null
+        : _channels.addEventListener(Channels.terminal, 'onDynamicExit', (
+            event,
+          ) {
+            final code = event is num
+                ? event.toInt()
+                : (event is Map && event['exitCode'] is num
+                      ? (event['exitCode'] as num).toInt()
+                      : null);
+            onExit(code);
+          }, arg: id);
+    return () {
+      offData();
+      offExit?.call();
+    };
+  }
+
+  Future<void> terminalWrite(int id, String data) =>
+      _channels.call(Channels.terminal, 'write', [
+        {'id': id, 'data': data},
+      ]);
+
+  Future<void> terminalDispose(int id) =>
+      _channels.call(Channels.terminal, 'dispose', [
+        {'id': id},
+      ]);
+
   // ------------------------------------------------- task management
   // The desktop task sidebar calls these through the `zcode-task` / `project`
   // channels (asar: renameTask, archiveTask, moveTask).

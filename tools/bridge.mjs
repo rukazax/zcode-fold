@@ -30,7 +30,11 @@ const rootArg = args.includes('--root') ? args[args.indexOf('--root') + 1] : nul
 const ROOT = path.resolve(
   rootArg ?? (serveMode ? path.parse(process.cwd()).root : process.cwd()),
 );
-const PORT = 8939;
+const portArg = args.includes('--port') ? args[args.indexOf('--port') + 1] : null;
+const PORT = portArg ? Number(portArg) : 8939;
+if (!Number.isInteger(PORT) || PORT <= 0 || PORT > 65535) {
+  throw new Error(`invalid --port: ${portArg}`);
+}
 
 function dec(raw) {
   const s = String(raw).replace(/^enc:v1:/, '').split('.');
@@ -46,15 +50,18 @@ function dec(raw) {
   return Buffer.concat([d.update(data), d.final()]).toString('utf8');
 }
 
-function lanIp() {
+function lanIps() {
   const ifaces = Object.values(os.networkInterfaces()).flat();
-  const v4 = ifaces.find(
-    (i) => i?.family === 'IPv4' && !i.internal && net.isIPv4(i.address),
-  );
-  return v4?.address ?? '127.0.0.1';
+  const seen = new Set();
+  for (const i of ifaces) {
+    if (i?.family !== 'IPv4' || i.internal || !net.isIPv4(i.address)) continue;
+    seen.add(i.address);
+  }
+  return [...seen];
 }
 
-const LAN = lanIp();
+const LAN_IPS = lanIps();
+const LAN = LAN_IPS[0] ?? '127.0.0.1';
 
 // ---------------------------------------------------------------------------
 // Mode 2: long-lived read-only file API (--serve)
@@ -206,6 +213,18 @@ function startFileServer(token) {
     }
     res.writeHead(404).end('bridge: unknown path');
   });
+  const announce = () => {
+    // Machine-readable line consumed by the phone's one-tap setup (it reads
+    // the terminal output over the already-paired ZCode relay).
+    const urls = LAN_IPS.map((ip) => `http://${ip}:${PORT}`);
+    console.log(
+      `BRIDGE_READY ${JSON.stringify({
+        url: urls[0] ?? `http://127.0.0.1:${PORT}`,
+        urls,
+        token,
+      })}`,
+    );
+  };
   server.listen(PORT, '0.0.0.0', () => {
     console.log('');
     console.log('  ZCode Fold — файловый мост (только чтение)');
@@ -216,6 +235,17 @@ function startFileServer(token) {
     console.log('  В приложении: Настройки → «Файлы ПК», укажи URL и токен.');
     console.log('  ─────────────────────────────────────────────');
     console.log('  CTRL+C — остановить.');
+    announce();
+  });
+  server.on('error', (e) => {
+    if (e && e.code === 'EADDRINUSE') {
+      // Another bridge is already serving (same token file): report its
+      // address so the phone can simply reuse it.
+      announce();
+      setTimeout(() => process.exit(0), 200);
+      return;
+    }
+    throw e;
   });
   return server;
 }

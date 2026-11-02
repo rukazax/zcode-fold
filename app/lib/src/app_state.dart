@@ -408,6 +408,10 @@ class AppState extends ChangeNotifier {
 
   String? bridgeFsUrl;
 
+  int? _pcTerminalId;
+  void Function()? _pcTerminalOff;
+  Future<bool>? _pcSetupFuture;
+
   Future<void> setBridgeFiles(String url, String token) async {
     bridgeFsUrl = url.trim().isEmpty
         ? null
@@ -436,7 +440,9 @@ class AppState extends ChangeNotifier {
     final candidates = <String>{
       if (bridgeFsUrl != null && bridgeFsUrl!.isNotEmpty) bridgeFsUrl!,
       'http://127.0.0.1:8939',
+      'http://127.0.0.1:8940',
       'http://10.0.2.2:8939',
+      'http://10.0.2.2:8940',
     };
     for (final url in candidates) {
       try {
@@ -447,7 +453,124 @@ class AppState extends ChangeNotifier {
         }
       } catch (_) {}
     }
-    return false;
+    // Nothing saved/working: ask the already-connected desktop to start the
+    // bridge for us (terminal channel, no agent turn, no token spend).
+    return autoSetupPcBridge();
+  }
+
+  /// One-tap PC setup: starts `bridge.mjs --serve --root C:/` in the project
+  /// folder through the desktop terminal and reads the `BRIDGE_READY` line.
+  /// No URL/token typing. Keeps the terminal alive while the bridge runs.
+  Future<bool> autoSetupPcBridge() {
+    final pending = _pcSetupFuture;
+    if (pending != null) return pending;
+    final future = _doAutoSetupPcBridge();
+    _pcSetupFuture = future;
+    return future.whenComplete(() => _pcSetupFuture = null);
+  }
+
+  Future<bool> _doAutoSetupPcBridge() async {
+    final transport = _transport;
+    final w = workspace;
+    if (transport == null || w == null) return false;
+    final cwd = '${w['workspacePath'] ?? ''}'.trim();
+    if (cwd.isEmpty) return false;
+    int? terminalId;
+    void Function()? off;
+    var exited = false;
+    try {
+      terminalId = await transport.terminalCreate(cwd);
+      final ready = Completer<Map<String, dynamic>>();
+      final buffer = StringBuffer();
+      off = transport.terminalListen(
+        terminalId,
+        onData: (data) {
+          buffer.write(data);
+          final match = RegExp(r'BRIDGE_READY\s*(\{[^\r\n]*\})')
+              .firstMatch(buffer.toString());
+          if (match != null && !ready.isCompleted) {
+            try {
+              final decoded = jsonDecode(match.group(1)!);
+              if (decoded is Map) {
+                ready.complete(decoded.cast<String, dynamic>());
+              }
+            } catch (_) {}
+          }
+        },
+        onExit: (code) {
+          exited = true;
+          if (!ready.isCompleted) {
+            ready.completeError(
+              StateError('terminal exited before BRIDGE_READY ($code)'),
+            );
+          }
+        },
+      );
+      _pcTerminalId = terminalId;
+      _pcTerminalOff = off;
+      await transport.terminalWrite(
+        terminalId,
+        'node tools/bridge.mjs --serve --root C:/ --port 8940\r',
+      );
+      final info = await ready.future.timeout(const Duration(seconds: 25));
+      final primary = '${info['url'] ?? ''}'.trim();
+      final token = '${info['token'] ?? ''}'.trim();
+      final urls =
+          (info['urls'] as List?)
+              ?.whereType<String>()
+              .where((u) => u.trim().isNotEmpty)
+              .toList() ??
+          [if (primary.isNotEmpty) primary];
+      if (urls.isEmpty || token.isEmpty) return false;
+      // The PC may have several adapters (LAN, VPN, virtual). Pick the one
+      // this phone can actually reach.
+      String? reachable;
+      for (final candidate in urls) {
+        try {
+          final health = await pcHealthFor(candidate, token);
+          if (health['ok'] == true) {
+            reachable = candidate;
+            break;
+          }
+        } catch (_) {}
+      }
+      if (reachable == null) return false;
+      await setBridgeFiles(reachable, token);
+      _pcTerminalId = terminalId;
+      _pcTerminalOff = off;
+      // If the bridge was already running elsewhere, this terminal exits.
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      if (exited) {
+        off();
+        _pcTerminalOff = null;
+        _pcTerminalId = null;
+        await transport.terminalDispose(terminalId);
+        terminalId = null;
+      }
+      return true;
+    } catch (_) {
+      off?.call();
+      if (terminalId != null) {
+        try {
+          await transport.terminalDispose(terminalId);
+        } catch (_) {}
+      }
+      return false;
+    }
+  }
+
+  Future<void> _disposePcTerminal() async {
+    final id = _pcTerminalId;
+    final off = _pcTerminalOff;
+    _pcTerminalId = null;
+    _pcTerminalOff = null;
+    off?.call();
+    final transport = _transport;
+    if (id != null && transport != null) {
+      try {
+        await transport.terminalDispose(id);
+      } catch (_) {}
+    }
   }
 
   Future<Map<String, dynamic>> pcHealth() async {
@@ -1726,6 +1849,7 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _teardown() async {
+    await _disposePcTerminal();
     await _disposeSession();
     final sessionsSub = _sessionsSub;
     _sessionsSub = null;
