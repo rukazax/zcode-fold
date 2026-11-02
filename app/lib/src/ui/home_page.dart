@@ -303,6 +303,40 @@ class _HomePageState extends State<HomePage> {
                     'Связь: ${state.relayState.name}',
                     style: TextStyle(color: Pal.muted, fontSize: 12),
                   ),
+                  Text(
+                    'Аккаунт Z.ai: ${state.hasJwt ? 'токен есть' : 'нужен вход'}',
+                    style: TextStyle(
+                      color: state.hasJwt ? Pal.muted : const Color(0xFFE3B341),
+                      fontSize: 12,
+                    ),
+                  ),
+                  if (state.error != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        state.error!,
+                        style: const TextStyle(
+                          color: Color(0xFFFF9A93),
+                          fontSize: 11.5,
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                  if (state.loginRequired)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton(
+                        onPressed: () {
+                          Navigator.of(sheetContext).pop();
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => ConnectPage(state: state),
+                            ),
+                          );
+                        },
+                        child: const Text('Подключить / войти'),
+                      ),
+                    ),
                   SizedBox(height: 6),
                   Text(
                     'Список: ${state.sessions.length} сессий · ${_listCollapsed ? 'свёрнут' : 'развёрнут'} · свайп влево/вправо',
@@ -330,7 +364,7 @@ class _HomePageState extends State<HomePage> {
                   SizedBox(height: 8),
                   Center(
                     child: Text(
-                      'ZCode Fold 0.6.2 · прямое подключение ZCode Remote',
+                      'ZCode Fold 0.6.3 · прямое подключение ZCode Remote',
                       style: TextStyle(color: Pal.muted, fontSize: 10.5),
                     ),
                   ),

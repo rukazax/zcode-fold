@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../models.dart';
+import 'connect_page.dart';
 import 'theme.dart';
 
 /// Desktop-style task sidebar: brand + device status, «Новая сессия», search,
@@ -129,6 +130,16 @@ class _SessionsPaneState extends State<SessionsPane> {
           Padding(
             padding: EdgeInsets.fromLTRB(12, 0, 12, 8),
             child: _banner(state.relayError!),
+          ),
+        if (state.loginRequired)
+          Padding(
+            padding: EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: _authBanner(context),
+          )
+        else if (state.error != null && !state.connected)
+          Padding(
+            padding: EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: _banner(state.error!),
           ),
         Expanded(
           child: state.sessionsLoading && !hasAny
@@ -753,6 +764,59 @@ class _SessionsPaneState extends State<SessionsPane> {
             onPressed: widget.onSettings,
             icon: Icon(Icons.settings_outlined, size: 19, color: Pal.muted),
             visualDensity: VisualDensity.compact,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _authBanner(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 9, 8, 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF2A2313),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFF5A472A)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(
+                Icons.key_off_rounded,
+                size: 15,
+                color: Color(0xFFE3B341),
+              ),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Нет токена аккаунта Z.ai — один QR не подключится. '
+                  'Забери токен мостом с ПК.',
+                  style: TextStyle(
+                    color: Color(0xFFFFD98A),
+                    fontSize: 11.5,
+                    height: 1.35,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => ConnectPage(state: widget.state),
+                ),
+              ),
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                foregroundColor: const Color(0xFFFFD98A),
+              ),
+              child: const Text('Подключить / войти'),
+            ),
           ),
         ],
       ),

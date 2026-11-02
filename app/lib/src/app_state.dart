@@ -175,6 +175,9 @@ class AppState extends ChangeNotifier {
       );
       _loadPins();
     }
+    // Without the account token a 3.17 QR can't be used; tell the user
+    // instead of silently sitting offline.
+    loginRequired = activeDevice != null && !hasJwt;
     notifyListeners();
     // Restore the last connection on cold start: the QR link is persistent, so
     // there is no reason to make the user tap "Переподключиться".
@@ -185,13 +188,42 @@ class AppState extends ChangeNotifier {
 
   // ---------------------------------------------------------------- pins
 
-  String get _pinsKey => 'pinned_${activeDevice?.id ?? 'none'}';
-  String get _pinsMetaKey => 'pinned_meta_${activeDevice?.id ?? 'none'}';
+  /// Pins belong to the desktop account, not to the random local device id:
+  /// re-scanning the QR must not lose them.
+  String get _pinsScope {
+    final device = activeDevice;
+    if (device == null) return 'none';
+    final parsed = RemoteConnectionParams.parse(device.url);
+    if (parsed != null && parsed.deviceSid.isNotEmpty) {
+      return parsed.deviceSid;
+    }
+    return device.id;
+  }
+
+  String get _pinsKey => 'pinned_$_pinsScope';
+  String get _pinsMetaKey => 'pinned_meta_$_pinsScope';
 
   void _loadPins() {
     pinnedSessions.clear();
     pinnedMeta.clear();
-    final raw = _prefs.getString(_pinsKey);
+    _readPins(_pinsKey, _pinsMetaKey);
+    // Migrate pins saved under the old per-device key.
+    final device = activeDevice;
+    if (pinnedSessions.isEmpty && device != null && _pinsScope != device.id) {
+      _readPins('pinned_${device.id}', 'pinned_meta_${device.id}');
+      if (pinnedSessions.isNotEmpty) {
+        unawaited(
+          _prefs.setString(_pinsKey, jsonEncode(pinnedSessions.toList())),
+        );
+        unawaited(_prefs.setString(_pinsMetaKey, jsonEncode(pinnedMeta)));
+      }
+    }
+    // Keep the id list and the metadata in sync.
+    pinnedMeta.removeWhere((id, _) => !pinnedSessions.contains(id));
+  }
+
+  void _readPins(String key, String metaKey) {
+    final raw = _prefs.getString(key);
     if (raw != null) {
       try {
         final list = jsonDecode(raw);
@@ -202,7 +234,7 @@ class AppState extends ChangeNotifier {
         }
       } catch (_) {}
     }
-    final metaRaw = _prefs.getString(_pinsMetaKey);
+    final metaRaw = _prefs.getString(metaKey);
     if (metaRaw != null) {
       try {
         final map = jsonDecode(metaRaw);
@@ -216,8 +248,6 @@ class AppState extends ChangeNotifier {
         }
       } catch (_) {}
     }
-    // Keep the id list and the metadata in sync.
-    pinnedMeta.removeWhere((id, _) => !pinnedSessions.contains(id));
   }
 
   bool isPinned(String sessionId) => pinnedSessions.contains(sessionId);
@@ -330,6 +360,28 @@ class AppState extends ChangeNotifier {
         : (parsed.deviceName?.trim().isNotEmpty == true
               ? parsed.deviceName!.trim()
               : 'ZCode');
+    // Re-scanning the same desktop must update it, not add duplicates.
+    SavedDevice? existing;
+    for (final saved in devices) {
+      final p = RemoteConnectionParams.parse(saved.url);
+      if (p != null &&
+          p.deviceSid == parsed.deviceSid &&
+          p.deviceMid == parsed.deviceMid) {
+        existing = saved;
+        break;
+      }
+    }
+    if (existing != null) {
+      existing
+        ..name = label
+        ..url = url.trim();
+      await _saveDevices();
+      await _prefs.setString(_kLastDevice, existing.id);
+      activeDevice = existing;
+      notifyListeners();
+      await connect();
+      return;
+    }
     final device = SavedDevice(id: id, name: label, url: url.trim());
     devices.add(device);
     await _saveDevices();
@@ -398,6 +450,11 @@ class AppState extends ChangeNotifier {
           (data['fsToken'] as String?) ?? '',
         );
       }
+      connecting = false;
+      notifyListeners();
+      // A bridge QR carries the account token: connect right away instead of
+      // leaving the user on an offline screen.
+      if (activeDevice != null) await connect();
     } catch (e) {
       connecting = false;
       error = _humanError(e);
