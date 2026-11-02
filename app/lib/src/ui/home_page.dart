@@ -59,7 +59,7 @@ class _HomePageState extends State<HomePage> {
                             },
                             child: SessionsPane(
                               state: state,
-                              onOpen: (s) => state.openSession(
+                              onOpen: (s) => state.openTaskAnywhere(
                                 s.sessionId,
                                 title: s.title,
                               ),
@@ -101,7 +101,7 @@ class _HomePageState extends State<HomePage> {
                       key: ValueKey('list'),
                       state: state,
                       onOpen: (s) =>
-                          state.openSession(s.sessionId, title: s.title),
+                          state.openTaskAnywhere(s.sessionId, title: s.title),
                       onOpenInProject: (feed, s) =>
                           state.openSessionInProject(feed, s),
                       onNew: state.startDraft,
@@ -330,7 +330,7 @@ class _HomePageState extends State<HomePage> {
                   SizedBox(height: 8),
                   Center(
                     child: Text(
-                      'ZCode Fold 0.6.0 · прямое подключение ZCode Remote',
+                      'ZCode Fold 0.6.1 · прямое подключение ZCode Remote',
                       style: TextStyle(color: Pal.muted, fontSize: 10.5),
                     ),
                   ),

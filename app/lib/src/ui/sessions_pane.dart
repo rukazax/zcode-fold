@@ -93,17 +93,31 @@ class _SessionsPaneState extends State<SessionsPane> {
       );
     }
 
-    final pinned = <(_ProjectGroup, SessionSummary)>[];
-    for (final group in projects) {
-      for (final s in group.sessions) {
-        if (state.isPinned(s.sessionId)) pinned.add((group, s));
-      }
-    }
-    final hasAny = projects.any((g) => g.sessions.isNotEmpty);
+    // Desktop-style sections: pinned first, then the active project's tasks
+    // ("Задачи"), then the other projects with their tasks.
+    final pinned = filter(state.pinnedTaskSummaries);
+    final activeGroup = projects.where((g) => g.active).firstOrNull;
+    final otherGroups = projects.where((g) => !g.active).toList();
+    final activeTasks = <SessionSummary>[
+      if (activeGroup != null)
+        ...activeGroup.sessions.where((s) => !state.isPinned(s.sessionId)),
+      ...filter(state.orphanTasks).where(
+        (s) =>
+            !state.isPinned(s.sessionId) &&
+            (activeGroup == null ||
+                !activeGroup.sessions.any((x) => x.sessionId == s.sessionId)),
+      ),
+    ];
+    activeTasks.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    final hasAny =
+        pinned.isNotEmpty ||
+        activeTasks.isNotEmpty ||
+        otherGroups.any((g) => g.sessions.isNotEmpty);
     final queryMiss =
         _query.isNotEmpty &&
         pinned.isEmpty &&
-        projects.every((g) => g.sessions.isEmpty);
+        activeTasks.isEmpty &&
+        otherGroups.every((g) => g.sessions.isEmpty);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -147,13 +161,42 @@ class _SessionsPaneState extends State<SessionsPane> {
                           'Закреплённые',
                           icon: Icons.push_pin_outlined,
                         ),
-                        for (final (group, s) in pinned)
+                        for (final s in pinned)
                           _sessionTile(
                             context,
                             s,
-                            group: group,
-                            showProject: projects.length > 1,
+                            group: projects
+                                .where(
+                                  (g) => g.sessions.any(
+                                    (x) => x.sessionId == s.sessionId,
+                                  ),
+                                )
+                                .firstOrNull,
+                            projectName: state.pinnedProjectLabel(s.sessionId),
+                            showProject: true,
                           ),
+                      ],
+                      if (activeGroup != null) ...[
+                        _sectionLabel(
+                          context,
+                          activeGroup.title.isEmpty
+                              ? 'Задачи'
+                              : 'Задачи · ${activeGroup.title}',
+                          icon: Icons.view_list_outlined,
+                        ),
+                        if (activeTasks.isEmpty && _query.isEmpty)
+                          Padding(
+                            padding: EdgeInsets.fromLTRB(12, 2, 12, 6),
+                            child: Text(
+                              'Пока нет задач',
+                              style: TextStyle(
+                                color: Pal.muted,
+                                fontSize: 11.5,
+                              ),
+                            ),
+                          ),
+                        for (final s in activeTasks)
+                          _sessionTile(context, s, group: activeGroup),
                       ],
                       if (queryMiss)
                         Padding(
@@ -163,7 +206,7 @@ class _SessionsPaneState extends State<SessionsPane> {
                             style: TextStyle(color: Pal.muted, fontSize: 12.5),
                           ),
                         ),
-                      for (final group in projects)
+                      for (final group in otherGroups)
                         _projectSection(context, group),
                     ],
                   ),
@@ -432,6 +475,7 @@ class _SessionsPaneState extends State<SessionsPane> {
     BuildContext context,
     SessionSummary session, {
     _ProjectGroup? group,
+    String? projectName,
     bool showProject = false,
   }) {
     final state = widget.state;
@@ -496,11 +540,12 @@ class _SessionsPaneState extends State<SessionsPane> {
                       fontWeight: active ? FontWeight.w600 : FontWeight.w500,
                     ),
                   ),
-                  if (showProject && group != null)
+                  if (showProject &&
+                      (projectName ?? group?.title ?? '').isNotEmpty)
                     Padding(
                       padding: EdgeInsets.only(top: 1),
                       child: Text(
-                        group.title,
+                        projectName ?? group!.title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(color: Pal.accent, fontSize: 9.5),
@@ -534,7 +579,8 @@ class _SessionsPaneState extends State<SessionsPane> {
                 ),
                 InkWell(
                   borderRadius: BorderRadius.circular(10),
-                  onTap: () => state.togglePin(session.sessionId),
+                  onTap: () =>
+                      state.togglePin(session.sessionId, session: session),
                   child: Padding(
                     padding: EdgeInsets.only(top: 2, left: 4, bottom: 2),
                     child: Icon(
@@ -553,16 +599,34 @@ class _SessionsPaneState extends State<SessionsPane> {
   }
 
   void _open(_ProjectGroup? group, SessionSummary session) {
+    final state = widget.state;
     final feed = group?.feed;
     final target = feed?.appWorkspace;
     if (feed != null &&
         target != null &&
-        AppState.workspaceKeyOf(target) != widget.state.workspaceKey &&
+        AppState.workspaceKeyOf(target) != state.workspaceKey &&
         widget.onOpenInProject != null) {
       widget.onOpenInProject!(feed, session);
-    } else {
-      widget.onOpen(session);
+      return;
     }
+    final inCurrent = state.sessions.any(
+      (s) => s.sessionId == session.sessionId,
+    );
+    final known =
+        group != null ||
+        inCurrent ||
+        state.taskWorkspacePaths.containsKey(session.sessionId);
+    if (!known) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Задача в другом проекте — открой его в списке проектов',
+          ),
+        ),
+      );
+      return;
+    }
+    widget.onOpen(session);
   }
 
   void _showSessionMenu(
@@ -597,7 +661,7 @@ class _SessionsPaneState extends State<SessionsPane> {
                     : 'Закрепить',
               ),
               onTap: () {
-                state.togglePin(session.sessionId);
+                state.togglePin(session.sessionId, session: session);
                 Navigator.pop(context);
               },
             ),

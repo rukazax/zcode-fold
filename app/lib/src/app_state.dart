@@ -101,6 +101,14 @@ class AppState extends ChangeNotifier {
   /// Task lists of the other projects (the active one uses [_sessionsSub]).
   /// Sourced from `project.readTree` over the active bridge.
   final List<ProjectFeed> projectFeeds = [];
+
+  /// Tasks that are not attached to a desktop project (work outside project,
+  /// draft workspaces). Shown in the flat «Задачи» section.
+  List<SessionSummary> orphanTasks = const [];
+
+  /// taskId → workspacePath, so a task from another workspace can be opened
+  /// by switching to that workspace first.
+  final Map<String, String> taskWorkspacePaths = {};
   bool projectFeedsLoading = false;
   Future<void>? _feedRefresh;
 
@@ -122,6 +130,10 @@ class AppState extends ChangeNotifier {
 
   /// Pinned session ids (local, per desktop).
   final Set<String> pinnedSessions = {};
+
+  /// Cached title/preview/project of pinned tasks, so the pinned section
+  /// survives tasks-index refreshes and project switches.
+  final Map<String, Map<String, dynamic>> pinnedMeta = {};
 
   RelayState relayState = RelayState.idle;
   String? relayError;
@@ -173,31 +185,121 @@ class AppState extends ChangeNotifier {
   // ---------------------------------------------------------------- pins
 
   String get _pinsKey => 'pinned_${activeDevice?.id ?? 'none'}';
+  String get _pinsMetaKey => 'pinned_meta_${activeDevice?.id ?? 'none'}';
 
   void _loadPins() {
     pinnedSessions.clear();
+    pinnedMeta.clear();
     final raw = _prefs.getString(_pinsKey);
-    if (raw == null) return;
-    try {
-      final list = jsonDecode(raw);
-      if (list is List) {
-        for (final id in list.whereType<String>()) {
-          pinnedSessions.add(id);
+    if (raw != null) {
+      try {
+        final list = jsonDecode(raw);
+        if (list is List) {
+          for (final id in list.whereType<String>()) {
+            pinnedSessions.add(id);
+          }
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
+    final metaRaw = _prefs.getString(_pinsMetaKey);
+    if (metaRaw != null) {
+      try {
+        final map = jsonDecode(metaRaw);
+        if (map is Map) {
+          for (final entry in map.entries) {
+            final value = entry.value;
+            if (value is Map) {
+              pinnedMeta['${entry.key}'] = value.cast<String, dynamic>();
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    // Keep the id list and the metadata in sync.
+    pinnedMeta.removeWhere((id, _) => !pinnedSessions.contains(id));
   }
 
   bool isPinned(String sessionId) => pinnedSessions.contains(sessionId);
 
-  Future<void> togglePin(String sessionId) async {
+  Future<void> togglePin(String sessionId, {SessionSummary? session}) async {
     if (pinnedSessions.contains(sessionId)) {
       pinnedSessions.remove(sessionId);
+      pinnedMeta.remove(sessionId);
     } else {
       pinnedSessions.add(sessionId);
+      final found = session ?? _findSession(sessionId);
+      pinnedMeta[sessionId] = {
+        'title': found?.title ?? '',
+        'preview': found?.preview,
+        'updatedAt': found?.updatedAt ?? 0,
+        'project': _projectLabelOf(sessionId),
+      };
     }
     await _prefs.setString(_pinsKey, jsonEncode(pinnedSessions.toList()));
+    await _prefs.setString(_pinsMetaKey, jsonEncode(pinnedMeta));
     notifyListeners();
+  }
+
+  SessionSummary? _findSession(String id) {
+    for (final s in sessions) {
+      if (s.sessionId == id) return s;
+    }
+    for (final feed in projectFeeds) {
+      for (final s in feed.sessions) {
+        if (s.sessionId == id) return s;
+      }
+    }
+    return null;
+  }
+
+  String _projectLabelOf(String id) {
+    for (final feed in projectFeeds) {
+      if (feed.sessions.any((s) => s.sessionId == id)) return feed.title;
+    }
+    if (sessions.any((s) => s.sessionId == id)) {
+      final w = workspace;
+      return w == null ? 'Проект' : AppState.workspaceTitle(w);
+    }
+    return pinnedMeta[id]?['project']?.toString() ?? '';
+  }
+
+  /// Pinned tasks for the sidebar: live tasks first, then cached metadata.
+  List<SessionSummary> get pinnedTaskSummaries {
+    final byId = <String, SessionSummary>{};
+    for (final s in sessions) {
+      if (isPinned(s.sessionId)) byId[s.sessionId] = s;
+    }
+    for (final feed in projectFeeds) {
+      for (final s in feed.sessions) {
+        if (isPinned(s.sessionId)) byId[s.sessionId] = s;
+      }
+    }
+    for (final id in pinnedSessions) {
+      if (byId.containsKey(id)) continue;
+      final meta = pinnedMeta[id];
+      final title = '${meta?['title'] ?? ''}'.trim();
+      byId[id] = SessionSummary(
+        sessionId: id,
+        title: title.isEmpty ? 'Закреплённая задача' : title,
+        phase: '',
+        preview: meta?['preview']?.toString(),
+        updatedAt: (meta?['updatedAt'] as num?)?.toInt() ?? 0,
+      );
+    }
+    final list = byId.values.toList()
+      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return list;
+  }
+
+  String pinnedProjectLabel(String id) {
+    for (final feed in projectFeeds) {
+      if (feed.sessions.any((s) => s.sessionId == id)) return feed.title;
+    }
+    if (sessions.any((s) => s.sessionId == id)) {
+      final w = workspace;
+      return w == null ? '' : AppState.workspaceTitle(w);
+    }
+    return pinnedMeta[id]?['project']?.toString() ?? '';
   }
 
   Future<void> _saveDevices() async {
@@ -642,12 +744,32 @@ class AppState extends ChangeNotifier {
         }
         final feed = ProjectFeed(project, appWorkspace: appWorkspace);
         feed.sessions = tasks
+            .where((t) => t['archived'] != true)
             .map(_sessionFromTask)
             .whereType<SessionSummary>()
             .toList();
         feed.loading = false;
         next.add(feed);
       }
+      // Tasks outside any project (work outside project / draft workspaces)
+      // belong to the flat «Задачи» section.
+      final projectIds = projects
+          .map((p) => '${p['id'] ?? ''}')
+          .where((id) => id.isNotEmpty)
+          .toSet();
+      final orphanIds = <String>{};
+      final orphans = <SessionSummary>[];
+      for (final task in allTasks) {
+        if (task['archived'] == true) continue;
+        final pid = '${task['projectId'] ?? ''}';
+        if (pid.isNotEmpty && projectIds.contains(pid)) continue;
+        final summary = _sessionFromTask(task);
+        if (summary != null && orphanIds.add(summary.sessionId)) {
+          orphans.add(summary);
+        }
+      }
+      orphans.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      orphanTasks = orphans;
       projectFeeds
         ..clear()
         ..addAll(next);
@@ -665,6 +787,11 @@ class AppState extends ChangeNotifier {
   SessionSummary? _sessionFromTask(Map<String, dynamic> task) {
     final id = '${task['taskId'] ?? task['sessionId'] ?? task['id'] ?? ''}';
     if (id.isEmpty) return null;
+    final workspacePath = '${task['workspacePath'] ?? task['cwd'] ?? ''}'
+        .trim();
+    if (workspacePath.isNotEmpty) {
+      taskWorkspacePaths[id] = workspacePath;
+    }
     final preview =
         task['lastAssistantPreview'] ??
         task['lastMessagePreview'] ??
@@ -698,6 +825,22 @@ class AppState extends ChangeNotifier {
       await openWorkspace(target);
     }
     await openSession(session.sessionId, title: session.displayTitle);
+  }
+
+  /// Opens a task even if it lives in another workspace: switch to the
+  /// workspace that owns it, then subscribe.
+  Future<void> openTaskAnywhere(String id, {String? title}) async {
+    final path = taskWorkspacePaths[id];
+    if (path != null && path.isNotEmpty) {
+      for (final w in workspaces) {
+        final wp = '${w['workspacePath'] ?? ''}';
+        if (wp == path && AppState.workspaceKeyOf(w) != workspaceKey) {
+          await openWorkspace(w);
+          break;
+        }
+      }
+    }
+    await openSession(id, title: title);
   }
 
   void _onSessionsChanged() {
@@ -1060,6 +1203,17 @@ class AppState extends ChangeNotifier {
       } else if (title != null) {
         live.optimisticRename(id, title);
       }
+    }
+    if (remove && pinnedSessions.remove(id)) {
+      pinnedMeta.remove(id);
+      unawaited(
+        _prefs.setString(_pinsKey, jsonEncode(pinnedSessions.toList())),
+      );
+      unawaited(_prefs.setString(_pinsMetaKey, jsonEncode(pinnedMeta)));
+    }
+    if (title != null && pinnedMeta.containsKey(id)) {
+      pinnedMeta[id] = {...pinnedMeta[id]!, 'title': title};
+      unawaited(_prefs.setString(_pinsMetaKey, jsonEncode(pinnedMeta)));
     }
     for (final feed in projectFeeds) {
       if (remove) {
