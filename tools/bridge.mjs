@@ -55,6 +55,7 @@ function lanIps() {
   const seen = new Set();
   for (const i of ifaces) {
     if (i?.family !== 'IPv4' || i.internal || !net.isIPv4(i.address)) continue;
+    if (i.address.startsWith('169.254.')) continue;
     seen.add(i.address);
   }
   return [...seen];

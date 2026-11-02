@@ -184,7 +184,9 @@ class _SessionsPaneState extends State<SessionsPane> {
                               : 'Задачи · ${activeGroup.title}',
                           icon: Icons.view_list_outlined,
                         ),
-                        if (activeTasks.isEmpty && _query.isEmpty)
+                        if (activeTasks.isEmpty &&
+                            _query.isEmpty &&
+                            pinned.isEmpty)
                           Padding(
                             padding: EdgeInsets.fromLTRB(12, 2, 12, 6),
                             child: Text(

@@ -68,6 +68,17 @@ Future<bool> showPcBridgeDialog(
                     height: 1.45,
                   ),
                 ),
+                if (state.pcSetupError != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Автонастройка: ${state.pcSetupError}',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      height: 1.4,
+                      color: Color(0xFFFF9A93),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 TextField(
                   controller: urlCtrl,

@@ -400,19 +400,21 @@ class ConversationTransport {
   // uses it to start the read-only file bridge on the computer with no user
   // input (the command is not an agent turn and costs no tokens).
 
-  Future<int> terminalCreate(String cwd) async {
+  Future<Object> terminalCreate(String cwd) async {
     final res = await _channels.call(Channels.terminal, 'create', [
       {'cols': 120, 'rows': 30, 'cwd': cwd},
     ]);
     final id = res is Map ? res['id'] : null;
-    if (id is! num) {
+    if (id == null) {
       throw StateError('terminal.create: no id in $res');
     }
-    return id.toInt();
+    // The desktop returns either a number or a string; keep it verbatim so
+    // write/events address the same terminal.
+    return id;
   }
 
   void Function() terminalListen(
-    int id, {
+    Object id, {
     required void Function(String data) onData,
     void Function(int? exitCode)? onExit,
   }) {
@@ -451,12 +453,12 @@ class ConversationTransport {
     };
   }
 
-  Future<void> terminalWrite(int id, String data) =>
+  Future<void> terminalWrite(Object id, String data) =>
       _channels.call(Channels.terminal, 'write', [
         {'id': id, 'data': data},
       ]);
 
-  Future<void> terminalDispose(int id) =>
+  Future<void> terminalDispose(Object id) =>
       _channels.call(Channels.terminal, 'dispose', [
         {'id': id},
       ]);

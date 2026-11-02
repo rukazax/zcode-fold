@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'cloud_api.dart';
 import 'models.dart';
+import 'pc_bridge_script.dart';
 import 'zcode/conversation.dart';
 import 'zcode/connection_params.dart';
 import 'zcode/relay_client.dart';
@@ -408,9 +409,10 @@ class AppState extends ChangeNotifier {
 
   String? bridgeFsUrl;
 
-  int? _pcTerminalId;
+  Object? _pcTerminalId;
   void Function()? _pcTerminalOff;
   Future<bool>? _pcSetupFuture;
+  String? pcSetupError;
 
   Future<void> setBridgeFiles(String url, String token) async {
     bridgeFsUrl = url.trim().isEmpty
@@ -469,15 +471,44 @@ class AppState extends ChangeNotifier {
     return future.whenComplete(() => _pcSetupFuture = null);
   }
 
+  /// PowerShell `-EncodedCommand` payload (UTF-16LE base64) that writes the
+  /// embedded bridge script into `%TEMP%` and runs it with Node.
+  String _pcBridgeLauncherCommand() {
+    final scriptB64 = base64.encode(utf8.encode(pcBridgeServerScript));
+    final ps =
+        "\$b64='$scriptB64';"
+        "\$p=Join-Path \$env:TEMP 'zcode-fold-bridge.cjs';"
+        "[IO.File]::WriteAllBytes(\$p,[Convert]::FromBase64String(\$b64));"
+        "\$tokenFile=Join-Path \$env:TEMP 'zcode-fold-bridge.token';"
+        "\$listen=Get-NetTCPConnection -LocalPort 8940 -State Listen "
+        "-ErrorAction SilentlyContinue;"
+        "if(-not \$listen){Start-Process -WindowStyle Hidden -FilePath 'node' "
+        "-ArgumentList ('\"{0}\"' -f \$p)};"
+        "Start-Sleep -Milliseconds 900;"
+        "\$token=(Get-Content \$tokenFile -Raw).Trim();"
+        "\$ips=Get-NetIPAddress -AddressFamily IPv4 | "
+        "Where-Object { \$_.IPAddress -ne '127.0.0.1' } | "
+        "ForEach-Object { \$_.IPAddress };"
+        "\$urls=@(\$ips | ForEach-Object { 'http://'+\$_+':8940' });"
+        "Write-Output ('BRIDGE_READY ' + "
+        "(@{url=\$urls[0];urls=\$urls;token=\$token} | ConvertTo-Json -Compress))";
+    final bytes = <int>[];
+    for (final unit in ps.codeUnits) {
+      bytes.add(unit & 0xFF);
+      bytes.add((unit >> 8) & 0xFF);
+    }
+    return base64.encode(bytes);
+  }
+
   Future<bool> _doAutoSetupPcBridge() async {
     final transport = _transport;
     final w = workspace;
     if (transport == null || w == null) return false;
     final cwd = '${w['workspacePath'] ?? ''}'.trim();
     if (cwd.isEmpty) return false;
-    int? terminalId;
+    Object? terminalId;
     void Function()? off;
-    var exited = false;
+    pcSetupError = null;
     try {
       terminalId = await transport.terminalCreate(cwd);
       final ready = Completer<Map<String, dynamic>>();
@@ -498,7 +529,6 @@ class AppState extends ChangeNotifier {
           }
         },
         onExit: (code) {
-          exited = true;
           if (!ready.isCompleted) {
             ready.completeError(
               StateError('terminal exited before BRIDGE_READY ($code)'),
@@ -510,7 +540,7 @@ class AppState extends ChangeNotifier {
       _pcTerminalOff = off;
       await transport.terminalWrite(
         terminalId,
-        'node tools/bridge.mjs --serve --root C:/ --port 8940\r',
+        'powershell -NoProfile -EncodedCommand ${_pcBridgeLauncherCommand()}\r',
       );
       final info = await ready.future.timeout(const Duration(seconds: 25));
       final primary = '${info['url'] ?? ''}'.trim();
@@ -534,21 +564,21 @@ class AppState extends ChangeNotifier {
           }
         } catch (_) {}
       }
-      if (reachable == null) return false;
+      if (reachable == null) {
+        pcSetupError = 'Мост запущен, но адрес недоступен: ${urls.join(', ')}';
+        notifyListeners();
+        return false;
+      }
       await setBridgeFiles(reachable, token);
       _pcTerminalId = terminalId;
       _pcTerminalOff = off;
-      // If the bridge was already running elsewhere, this terminal exits.
-      await Future<void>.delayed(const Duration(milliseconds: 400));
-      if (exited) {
-        off();
-        _pcTerminalOff = null;
-        _pcTerminalId = null;
-        await transport.terminalDispose(terminalId);
-        terminalId = null;
-      }
+      // Keep the terminal alive: it owns the bridge process. Disposing it
+      // immediately kills the HTTP server (the `exit` event can also fire
+      // spuriously), so the keep-alive reference is intentional.
       return true;
-    } catch (_) {
+    } catch (e) {
+      pcSetupError = _humanError(e);
+      notifyListeners();
       off?.call();
       if (terminalId != null) {
         try {
