@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B0F0C"/>
+      <stop offset="0.55" stop-color="#101813"/>
+      <stop offset="1" stop-color="#0B0F0C"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#8EE6A8"/>
+      <stop offset="1" stop-color="#4FBF79"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" stroke="#203027" stroke-width="1" opacity="0.35"/>
+    </pattern>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="18" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="420" rx="28" fill="url(#bg)"/>
+  <rect width="1200" height="420" rx="28" fill="url(#grid)"/>
+  <circle cx="1010" cy="90" r="130" fill="#8EE6A8" opacity="0.08" filter="url(#glow)"/>
+  <circle cx="1120" cy="330" r="90" fill="#4FBF79" opacity="0.10" filter="url(#glow)"/>
+
+  <g transform="translate(64 58)">
+    <rect width="46" height="46" rx="14" fill="#8EE6A8" opacity="0.14"/>
+    <text x="23" y="32" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="26" font-weight="800" fill="#8EE6A8">Z</text>
+    <text x="62" y="22" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="2.4" fill="#8EE6A8">MOBILE CLIENT</text>
+    <text x="62" y="41" font-family="Segoe UI, Arial, sans-serif" font-size="11" fill="#8A938D">for ZCode 3.17 · Android</text>
+  </g>
+
+  <text x="64" y="190" font-family="Segoe UI, Arial, sans-serif" font-size="64" font-weight="800" fill="#F2F6F3">ZCode Fold</text>
+  <text x="66" y="232" font-family="Segoe UI, Arial, sans-serif" font-size="21" fill="#B9C4BD">Десктопный ZCode в кармане —</text>
+  <text x="66" y="262" font-family="Segoe UI, Arial, sans-serif" font-size="21" fill="#B9C4BD">с раскладкой под фолдаблы и живым чатом.</text>
+
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="13">
+    <rect x="64" y="300" width="152" height="34" rx="17" fill="#18241C" stroke="#2C4A36"/>
+    <text x="140" y="322" text-anchor="middle" fill="#CFE9D7">QR / remote v4</text>
+    <rect x="228" y="300" width="160" height="34" rx="17" fill="#18241C" stroke="#2C4A36"/>
+    <text x="308" y="322" text-anchor="middle" fill="#CFE9D7">модели с ПК</text>
+    <rect x="400" y="300" width="176" height="34" rx="17" fill="#18241C" stroke="#2C4A36"/>
+    <text x="488" y="322" text-anchor="middle" fill="#CFE9D7">файлы всего диска</text>
+    <rect x="588" y="300" width="142" height="34" rx="17" fill="#18241C" stroke="#2C4A36"/>
+    <text x="659" y="322" text-anchor="middle" fill="#CFE9D7">0 токенов</text>
+  </g>
+
+  <g transform="translate(790 54)">
+    <rect x="0" y="0" width="170" height="312" rx="24" fill="#121714" stroke="#2C3A31"/>
+    <rect x="14" y="14" width="142" height="20" rx="7" fill="#1B231E"/>
+    <rect x="14" y="44" width="88" height="10" rx="5" fill="#8EE6A8" opacity="0.85"/>
+    <rect x="14" y="62" width="60" height="8" rx="4" fill="#556159"/>
+    <rect x="14" y="86" width="142" height="26" rx="9" fill="#8EE6A8" opacity="0.85"/>
+    <rect x="14" y="124" width="142" height="22" rx="8" fill="#1B231E"/>
+    <rect x="14" y="158" width="120" height="9" rx="4" fill="#8EE6A8" opacity="0.35"/>
+    <rect x="14" y="178" width="142" height="38" rx="10" fill="#17231B" stroke="#2C4A36"/>
+    <rect x="24" y="190" width="82" height="7" rx="3" fill="#8EE6A8" opacity="0.7"/>
+    <rect x="24" y="202" width="108" height="6" rx="3" fill="#556159"/>
+    <rect x="14" y="226" width="132" height="7" rx="3" fill="#556159"/>
+    <rect x="14" y="240" width="110" height="7" rx="3" fill="#3B453E"/>
+    <rect x="14" y="254" width="124" height="7" rx="3" fill="#3B453E"/>
+    <rect x="14" y="276" width="142" height="22" rx="8" fill="#1B231E"/>
+  </g>
+
+  <g transform="translate(958 78)">
+    <rect x="0" y="0" width="186" height="300" rx="24" fill="#121714" stroke="#2C3A31"/>
+    <rect x="14" y="14" width="158" height="22" rx="8" fill="#1B231E"/>
+    <rect x="14" y="50" width="120" height="8" rx="4" fill="#8A938D"/>
+    <rect x="14" y="66" width="150" height="8" rx="4" fill="#3B453E"/>
+    <rect x="14" y="80" width="140" height="8" rx="4" fill="#3B453E"/>
+    <rect x="14" y="104" width="150" height="8" rx="4" fill="#8A938D"/>
+    <rect x="14" y="120" width="132" height="8" rx="4" fill="#3B453E"/>
+    <rect x="14" y="144" width="64" height="24" rx="10" fill="#1B2A20" stroke="#2E4638"/>
+    <rect x="86" y="144" width="76" height="24" rx="10" fill="#8EE6A8" opacity="0.18" stroke="#3E6B4F"/>
+    <rect x="14" y="184" width="150" height="8" rx="4" fill="#8A938D"/>
+    <rect x="14" y="200" width="138" height="8" rx="4" fill="#3B453E"/>
+    <rect x="14" y="226" width="150" height="8" rx="4" fill="#8A938D"/>
+    <rect x="14" y="242" width="112" height="8" rx="4" fill="#3B453E"/>
+    <rect x="14" y="266" width="158" height="20" rx="8" fill="#1B231E"/>
+    <circle cx="160" cy="276" r="6" fill="#8EE6A8" opacity="0.9"/>
+  </g>
+
+  <path d="M748 210 C 770 210, 770 210, 788 210" stroke="#8EE6A8" stroke-width="2" opacity="0.6"/>
+  <path d="M932 210 C 944 210, 944 210, 956 210" stroke="#8EE6A8" stroke-width="2" opacity="0.6"/>
+</svg>

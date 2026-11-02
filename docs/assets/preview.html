@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: #070908;
+    font-family: "Segoe UI", system-ui, sans-serif; color: #e9edea;
+    display: flex; gap: 24px; align-items: flex-start;
+  }
+  .phone {
+    width: 400px; height: 880px; background: #0f1210;
+    border: 1px solid #2b302d; border-radius: 30px; overflow: hidden;
+    position: relative; flex: 0 0 auto; padding: 14px 16px 12px;
+  }
+  .status {
+    display: flex; justify-content: space-between; font-size: 11px;
+    color: #c9d0cb; letter-spacing: .2px; margin-bottom: 10px;
+  }
+  .status .right { color: #aab2ac; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .logo {
+    width: 34px; height: 34px; border-radius: 10px; background: rgba(142,230,168,.14);
+    color: #8ee6a8; font-weight: 900; display: flex; align-items: center;
+    justify-content: center; font-size: 18px;
+  }
+  .dev { font-size: 15px; font-weight: 700; line-height: 1.2; }
+  .sub { font-size: 11px; color: #8a938d; display: flex; align-items: center; gap: 6px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: #8ee6a8; }
+  .grow { flex: 1; min-width: 0; }
+  .icon { color: #8a938d; font-size: 17px; }
+  .newbtn {
+    margin: 14px 0 10px; height: 46px; border-radius: 14px; background: #7fe39a;
+    color: #0c2413; font-weight: 700; font-size: 16px; display: flex;
+    align-items: center; justify-content: center; gap: 8px;
+  }
+  .search {
+    height: 46px; border-radius: 14px; background: #191d1a; border: 1px solid #272c28;
+    display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    color: #7f8882; font-size: 14px; margin-bottom: 16px;
+  }
+  .label {
+    display: flex; align-items: center; gap: 8px; color: #8a938d;
+    font-size: 11px; font-weight: 700; letter-spacing: .3px; margin: 14px 0 8px;
+  }
+  .label .p { color: #8ee6a8; }
+  .card {
+    border-radius: 14px; padding: 10px 10px 10px 12px; margin-bottom: 8px;
+    border: 1px solid transparent;
+  }
+  .card.active { background: rgba(142,230,168,.10); border-color: rgba(142,230,168,.35); }
+  .card .t { font-size: 14px; font-weight: 600; color: #eef2ef; }
+  .card .meta { font-size: 10px; color: #8ee6a8; margin-top: 2px; }
+  .card .prev { font-size: 11px; color: #8a938d; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card .time { font-size: 10px; color: #8a938d; }
+  .pin { color: #8ee6a8; font-size: 14px; }
+  .task { display: flex; align-items: flex-start; gap: 10px; padding: 9px 8px; }
+  .bullet { width: 7px; height: 7px; border-radius: 50%; background: #6d766f; margin-top: 6px; }
+  .bullet.red { background: #ff7b72; }
+  .spinner {
+    width: 13px; height: 13px; border-radius: 50%; border: 2px solid #3b423d;
+    border-top-color: #8ee6a8; margin-top: 3px;
+  }
+  .project { display: flex; align-items: center; gap: 8px; padding: 8px 8px 6px; color: #c9d0cb; }
+  .project .name { font-size: 12px; font-weight: 700; }
+  .project .count { margin-left: auto; font-size: 10px; color: #8a938d; }
+  .footer {
+    position: absolute; left: 12px; right: 12px; bottom: 10px; border-top: 1px solid #272c28;
+    padding-top: 10px; display: flex; align-items: center; gap: 10px;
+  }
+  .avatar { width: 26px; height: 26px; border-radius: 50%; background: #202521; display: flex; align-items: center; justify-content: center; color: #9aa49d; font-size: 13px; }
+  /* chat */
+  .chat-head { display: flex; align-items: center; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid #272c28; }
+  .chat-title { font-size: 16px; font-weight: 700; }
+  .chip { background: #202521; border: 1px solid #2e3430; border-radius: 12px; padding: 7px 10px; font-size: 11px; color: #dfe5e1; }
+  .usage { width: 34px; height: 34px; border-radius: 50%; border: 2px solid #8ee6a8; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #dfe5e1; }
+  .chat-body { padding: 14px 2px; }
+  .think { color: #8a938d; font-style: italic; font-size: 12px; line-height: 1.55; margin-bottom: 10px; }
+  .user { margin-left: auto; width: fit-content; max-width: 80%; background: #1d2a21; border: 1px solid #2d4a37; border-radius: 12px 12px 4px 12px; padding: 9px 12px; font-size: 12.5px; line-height: 1.4; margin: 10px 0; }
+  .working { display: flex; align-items: center; gap: 8px; color: #8a938d; font-size: 11px; margin-top: 12px; }
+  .spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #3b423d; border-top-color: #8ee6a8; }
+  .composer { position: absolute; left: 12px; right: 12px; bottom: 10px; border-top: 1px solid #272c28; padding-top: 10px; }
+  .input { height: 42px; border-radius: 12px; background: #171b18; border: 1px solid #2b302d; color: #7f8882; font-size: 12.5px; display: flex; align-items: center; padding: 0 12px; }
+  .btns { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .circle { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+  .plus { background: #1d221e; color: #8ee6a8; }
+  .bolt { background: #8ee6a8; color: #102216; }
+  .stop { background: #ff7b72; color: #2a0d0b; }
+  .send { margin-left: auto; background: #8ee6a8; color: #102216; }
+  /* settings */
+  .sheet-title { font-size: 18px; font-weight: 700; margin: 6px 0 14px; }
+  .group { font-size: 11px; color: #8a938d; font-weight: 700; margin: 12px 0 6px; }
+  .model { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 5px 0; color: #dfe5e1; }
+  .radio { width: 15px; height: 15px; border-radius: 50%; border: 1.5px solid #68716a; }
+  .radio.on { border: 4px solid #8ee6a8; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 6px; }
+  .pill { border: 1px solid #2e3430; background: #191d1a; border-radius: 10px; padding: 9px 12px; font-size: 12px; color: #cfd6d1; }
+  .pill.on { background: #263a2c; border-color: #8ee6a8; color: #e9f7ed; }
+  .note { font-size: 10.5px; color: #8a938d; line-height: 1.45; margin: 10px 0 4px; }
+  .action { display: flex; align-items: center; gap: 12px; padding: 10px 0; font-size: 13px; color: #dfe5e1; border-top: 1px solid #202522; }
+  .action .ico { color: #8a938d; width: 18px; text-align: center; }
+  .action.danger { color: #ff8e86; }
+  /* files */
+  .file-head { display: flex; align-items: center; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid #272c28; }
+  .file-title { font-size: 16px; font-weight: 700; }
+  .path { font-size: 10.5px; color: #8a938d; }
+  .file { display: flex; align-items: center; gap: 12px; padding: 14px 2px; border-bottom: 1px solid #232825; font-size: 14px; }
+  .folder { color: #8ee6a8; font-size: 18px; }
+  .file .chev { margin-left: auto; color: #69726b; }
+  .bridge-chip { position: absolute; left: 16px; bottom: 16px; font-size: 10px; color: #8ee6a8; border: 1px solid rgba(142,230,168,.35); background: rgba(142,230,168,.08); padding: 5px 9px; border-radius: 8px; }
+</style>
+</head>
+<body>
+
+<!-- 1. Sidebar -->
+<div class="phone" id="p1">
+  <div class="status"><span>14:37</span><span class="right">Wi-Fi · 29%</span></div>
+  <div class="row">
+    <div class="logo">Z</div>
+    <div class="grow"><div class="dev">DESKTOP-JLESF8H</div><div class="sub"><span class="dot"></span>на связи</div></div>
+    <div class="icon">«</div><div class="icon">⋮</div>
+  </div>
+  <div class="newbtn">＋ Новая задача</div>
+  <div class="search">⌕ Поиск по задачам</div>
+
+  <div class="label"><span>📌</span> Закреплённые</div>
+  <div class="card active">
+    <div class="row"><div class="grow"><div class="t">pc-admin</div><div class="meta">draft-ee3ab539 · проект</div></div><div class="time">13:58</div><div class="pin">📌</div></div>
+    <div class="prev">Проверено — следит за выбранной моделью</div>
+  </div>
+
+  <div class="label"><span>🗂</span> Задачи · draft-ee3ab539</div>
+  <div style="font-size:11px;color:#7f8882;padding:2px 8px 8px">Пока нет задач</div>
+
+  <div class="project"><span>📁</span><span class="name">zCode</span><span class="count">4</span></div>
+  <div class="task"><div class="spinner"></div><div class="grow"><div class="t">Mobile zCode</div><div class="prev">Живой экран уже показывает разбивку…</div></div><div class="time">14:23</div></div>
+  <div class="task"><div class="bullet"></div><div class="grow"><div class="t">Десктоп</div><div class="prev"># Phase 1 готова — проверил…</div></div><div class="time">14:23</div></div>
+  <div class="task"><div class="bullet red"></div><div class="grow"><div class="t">android service</div><div class="prev">mDNS сам нашёл актуальный порт</div></div><div class="time">03:55</div></div>
+  <div class="task"><div class="bullet"></div><div class="grow"><div class="t">test-renamed-back</div><div class="prev">Ответил одним словом: привет</div></div><div class="time">31.10</div></div>
+
+  <div class="footer">
+    <div class="avatar">👤</div>
+    <div class="grow"><div style="font-size:11.5px;font-weight:600">DESKTOP-JLESF8H</div><div style="font-size:10px;color:#8a938d">draft-ee3ab539-08fa-479d…</div></div>
+    <div class="icon">⚙</div>
+  </div>
+</div>
+
+<!-- 2. Chat -->
+<div class="phone" id="p2">
+  <div class="status"><span>14:37</span><span class="right">Wi-Fi · 29%</span></div>
+  <div class="chat-head">
+    <div class="icon">←</div>
+    <div class="grow"><div class="chat-title">Mobile zCode</div><div class="sub"><span class="dot"></span>модель работает…</div></div>
+    <div class="chip">deepseek-flash</div><div class="usage">51</div><div class="icon">📁</div><div class="icon">⚙</div>
+  </div>
+  <div class="chat-body">
+    <div class="think">The previous message asked to answer in one word. Now they say “test-follow”. Maybe they’re testing whether I follow up.</div>
+    <div class="think">I’ll respond briefly asking what they want tested. The recall shows prior requests were just tests.</div>
+    <div class="user">test-follow2</div>
+    <div class="think">test-follow2 — принято. Похоже, гоняешь цепочку с телефона: test-from-phone → test-follow → test-follow2. Всё доходит, отвечаю.</div>
+    <div class="working"><span class="spin"></span> Агент работает..</div>
+  </div>
+  <div class="composer">
+    <div class="input">Задача для агента…</div>
+    <div class="btns"><div class="circle plus">＋</div><div class="circle bolt">⚡</div><div class="circle stop">■</div><div class="circle send" style="background:#202521;color:#8a938d">↑</div></div>
+  </div>
+</div>
+
+<!-- 3. Task settings -->
+<div class="phone" id="p3">
+  <div class="status"><span>14:24</span><span class="right">Wi-Fi · 27%</span></div>
+  <div class="sheet-title">Настройки задачи</div>
+  <div class="group">DeepSeek</div>
+  <div class="model"><span class="radio on"></span> deepseek-flash</div>
+  <div class="group">OpenCode Go (Chat)</div>
+  <div class="model"><span class="radio"></span> minimax-m3.1-flash</div>
+  <div class="model"><span class="radio"></span> kimi-k3.1-pro</div>
+  <div class="model"><span class="radio"></span> glm-5.3-flash</div>
+  <div class="model"><span class="radio"></span> mimo-v2.6-pro</div>
+  <div class="group">OpenAI</div>
+  <div class="model"><span class="radio"></span> gpt-6-astra</div>
+  <div class="model"><span class="radio"></span> gpt-5.6-terra</div>
+  <div class="group" style="margin-top:16px">Режим задачи</div>
+  <div class="chips"><span class="pill">Build</span><span class="pill">Edit</span><span class="pill">Plan</span><span class="pill on">✓ Yolo</span></div>
+  <div class="group">Уровень размышлений</div>
+  <div class="chips"><span class="pill">disabled</span><span class="pill">low</span><span class="pill">high</span><span class="pill on">✓ max</span></div>
+  <div class="note">Модель и режим применятся к следующему сообщению — как в композере десктопа. Текущий ход не прерывается.</div>
+  <div class="action"><span class="ico">✎</span> Переименовать</div>
+  <div class="action"><span class="ico">➜</span> Перенести в проект…</div>
+  <div class="action"><span class="ico">📌</span> Закрепить</div>
+  <div class="action"><span class="ico">🗄</span> В архив</div>
+  <div class="action danger"><span class="ico">🗑</span> Удалить задачу</div>
+</div>
+
+<!-- 4. Files -->
+<div class="phone" id="p4">
+  <div class="status"><span>14:12</span><span class="right">Wi-Fi · 26%</span></div>
+  <div class="file-head">
+    <div class="icon">←</div>
+    <div class="grow"><div class="file-title">Файлы ПК</div><div class="path">C:\</div></div>
+    <div class="icon">↑</div><div class="icon">⚙</div><div class="icon">⟳</div>
+  </div>
+  <div class="file"><span class="folder">📁</span> Program Files <span class="chev">›</span></div>
+  <div class="file"><span class="folder">📁</span> Program Files (x86) <span class="chev">›</span></div>
+  <div class="file"><span class="folder">📁</span> ProgramData <span class="chev">›</span></div>
+  <div class="file"><span class="folder">📁</span> Users <span class="chev">›</span></div>
+  <div class="file"><span class="folder">📁</span> Windows <span class="chev">›</span></div>
+  <div class="file"><span class="folder">📁</span> Recovery <span class="chev">›</span></div>
+  <div class="bridge-chip">● мост: авто · весь диск C:</div>
+</div>
+
+</body>
+</html>
