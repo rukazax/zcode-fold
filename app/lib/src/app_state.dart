@@ -132,6 +132,9 @@ class AppState extends ChangeNotifier {
   /// Pinned session ids (local, per desktop).
   final Set<String> pinnedSessions = {};
 
+  /// Tasks pinned on the desktop itself (`project.readTree` → `pinned`).
+  final Set<String> desktopPinned = {};
+
   /// Cached title/preview/project of pinned tasks, so the pinned section
   /// survives tasks-index refreshes and project switches.
   final Map<String, Map<String, dynamic>> pinnedMeta = {};
@@ -250,10 +253,32 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  bool isPinned(String sessionId) => pinnedSessions.contains(sessionId);
+  bool isPinned(String sessionId) =>
+      pinnedSessions.contains(sessionId) || desktopPinned.contains(sessionId);
+
+  Future<bool> _setDesktopPinned(String sessionId, bool pinned) async {
+    final transport = _transport;
+    if (transport == null) return false;
+    try {
+      await transport.setTaskPinned(sessionId, pinned);
+      return true;
+    } catch (e) {
+      error = _humanError(e);
+      return false;
+    }
+  }
 
   Future<void> togglePin(String sessionId, {SessionSummary? session}) async {
-    if (pinnedSessions.contains(sessionId)) {
+    if (desktopPinned.contains(sessionId)) {
+      // Pinned on the desktop: unpin there too, otherwise it comes back on
+      // the next project-tree refresh.
+      if (await _setDesktopPinned(sessionId, false)) {
+        desktopPinned.remove(sessionId);
+      }
+      pinnedSessions.remove(sessionId);
+      pinnedMeta.remove(sessionId);
+    } else if (pinnedSessions.contains(sessionId)) {
+      await _setDesktopPinned(sessionId, false);
       pinnedSessions.remove(sessionId);
       pinnedMeta.remove(sessionId);
     } else {
@@ -265,6 +290,9 @@ class AppState extends ChangeNotifier {
         'updatedAt': found?.updatedAt ?? 0,
         'project': _projectLabelOf(sessionId),
       };
+      if (await _setDesktopPinned(sessionId, true)) {
+        desktopPinned.add(sessionId);
+      }
     }
     await _prefs.setString(_pinsKey, jsonEncode(pinnedSessions.toList()));
     await _prefs.setString(_pinsMetaKey, jsonEncode(pinnedMeta));
@@ -918,6 +946,17 @@ class AppState extends ChangeNotifier {
       for (final t in (tree['tasks'] as List? ?? const [])) {
         if (t is Map) allTasks.add(t.cast<String, dynamic>());
       }
+      // Desktop pins come from each task's `pinned` flag. Clear first so an
+      // unpin on the PC disappears here on the next refresh.
+      desktopPinned.clear();
+      for (final t in allTasks) {
+        _applyDesktopPin(t);
+      }
+      for (final project in projects) {
+        for (final t in (project['tasks'] as List? ?? const [])) {
+          if (t is Map) _applyDesktopPin(t.cast<String, dynamic>());
+        }
+      }
       final activePath = workspace == null
           ? null
           : '${workspace!['workspacePath'] ?? ''}';
@@ -994,7 +1033,16 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  void _applyDesktopPin(Map<String, dynamic> task) {
+    final id = '${task['taskId'] ?? task['sessionId'] ?? task['id'] ?? ''}';
+    if (id.isEmpty) return;
+    final path = '${task['workspacePath'] ?? task['cwd'] ?? ''}'.trim();
+    if (path.isNotEmpty) taskWorkspacePaths[id] = path;
+    if (task['pinned'] == true) desktopPinned.add(id);
+  }
+
   SessionSummary? _sessionFromTask(Map<String, dynamic> task) {
+    _applyDesktopPin(task);
     final id = '${task['taskId'] ?? task['sessionId'] ?? task['id'] ?? ''}';
     if (id.isEmpty) return null;
     final workspacePath = '${task['workspacePath'] ?? task['cwd'] ?? ''}'
