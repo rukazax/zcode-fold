@@ -1322,6 +1322,7 @@ class SessionEntry {
   final int lastActivityAt;
   final int createdAt;
   final bool hasBackgroundWork;
+  final bool pinned;
   final Map<String, dynamic>? pendingInteraction;
   final Map<String, dynamic> raw;
 
@@ -1334,6 +1335,7 @@ class SessionEntry {
       lastActivityAt = (raw['lastActivityAt'] as num?)?.toInt() ?? 0,
       createdAt = (raw['createdAt'] as num?)?.toInt() ?? 0,
       hasBackgroundWork = raw['hasBackgroundWork'] == true,
+      pinned = raw['pinned'] == true || raw['pinned'] == 1,
       pendingInteraction = (raw['pendingInteraction'] as Map?)
           ?.cast<String, dynamic>();
 }

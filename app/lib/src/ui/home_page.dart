@@ -364,7 +364,7 @@ class _HomePageState extends State<HomePage> {
                   SizedBox(height: 8),
                   Center(
                     child: Text(
-                      'ZCode Fold 0.6.4 · прямое подключение ZCode Remote',
+                      'ZCode Fold 0.6.5 · прямое подключение ZCode Remote',
                       style: TextStyle(color: Pal.muted, fontSize: 10.5),
                     ),
                   ),
