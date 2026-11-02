@@ -65,27 +65,31 @@ class ConversationTransport {
 
   Future<void> handshake() {
     if (_handshaken) return Future.value();
-    return _handshakeFuture ??= () async {
-      final hello = await _channels.call(channel, 'helloConversationV4', []);
-      _log('[v4] hello: $hello');
-      if (hello is Map) {
-        connectionId = hello['connectionId'] as String?;
-      }
-      await _channels.call(channel, 'initializeConversationV4', [
-        {
-          'kind': 'clientHello',
-          'protocolVersion': 3,
-          'clientId': clientId,
-          'clientKind': 'mobileApp',
-          'appVersion': appVersion,
-        },
-      ]);
-      _handshaken = true;
-    }()
-        .catchError((e) {
-      _handshakeFuture = null;
-      throw e;
-    });
+    return _handshakeFuture ??=
+        () async {
+          final hello = await _channels.call(
+            channel,
+            'helloConversationV4',
+            [],
+          );
+          _log('[v4] hello: $hello');
+          if (hello is Map) {
+            connectionId = hello['connectionId'] as String?;
+          }
+          await _channels.call(channel, 'initializeConversationV4', [
+            {
+              'kind': 'clientHello',
+              'protocolVersion': 3,
+              'clientId': clientId,
+              'clientKind': 'mobileApp',
+              'appVersion': appVersion,
+            },
+          ]);
+          _handshaken = true;
+        }().catchError((e) {
+          _handshakeFuture = null;
+          throw e;
+        });
   }
 
   Future<ConversationSubscription> subscribe(String sessionId) async {
@@ -119,8 +123,6 @@ class ConversationTransport {
     'reorderQueueItem',
     'deleteQueueItem',
     'setAutoDrain',
-    'switchModelConfig',
-    'switchCollaborationMode',
     'setFollowupMode',
     'pauseGoal',
     'resumeGoal',
@@ -201,8 +203,8 @@ class ConversationTransport {
       // command bumps the revision by one, so the next CAS base is +1.
       final floor =
           (status == 'accepted' || status == 'noop' || status == 'duplicate')
-              ? rev + 1
-              : rev;
+          ? rev + 1
+          : rev;
       if (floor > (_ackedRevisions[sessionId] ?? 0)) {
         _ackedRevisions[sessionId] = floor;
       }
@@ -213,35 +215,31 @@ class ConversationTransport {
   /// Sends one command envelope; on timeout (likely a relay drop mid-flight)
   /// waits for bridge recovery and retries once with a fresh commandId.
   Future<dynamic> _sendCommandWithRetry(
-      Map<String, dynamic> envelope, Duration timeout) async {
+    Map<String, dynamic> envelope,
+    Duration timeout,
+  ) async {
     try {
-      return await _channels.call(
-          channel,
-          'sendConversationCommandV4',
-          [
-            {...scope, 'envelope': envelope},
-          ],
-          timeout: timeout);
+      return await _channels.call(channel, 'sendConversationCommandV4', [
+        {...scope, 'envelope': envelope},
+      ], timeout: timeout);
     } on TimeoutException {
       // Retry only when the relay dropped mid-flight (bridge degraded): the
       // command then never reached the server. If the bridge is still
       // healthy, rethrow — a retry would double-deliver (e.g. sendText).
       if (session.degraded.value == null) rethrow;
-      _log('[v4] command timed out during drop, waiting for recovery and '
-          'retrying');
+      _log(
+        '[v4] command timed out during drop, waiting for recovery and '
+        'retrying',
+      );
       await session.waitHealthy(timeout: const Duration(seconds: 45));
       final fresh = {
         ...envelope,
         'commandId': generateUuid(),
         'issuedAt': DateTime.now().millisecondsSinceEpoch,
       };
-      return _channels.call(
-          channel,
-          'sendConversationCommandV4',
-          [
-            {...scope, 'envelope': fresh},
-          ],
-          timeout: timeout);
+      return _channels.call(channel, 'sendConversationCommandV4', [
+        {...scope, 'envelope': fresh},
+      ], timeout: timeout);
     }
   }
 
@@ -252,34 +250,33 @@ class ConversationTransport {
     String workspaceId, {
     String? firstText,
     List<Map<String, dynamic>>? attachments,
+    Map<String, dynamic>? firstInputConfig,
     Map<String, dynamic>? config,
     String? runtimeModel,
     List<String>? mcpServers,
     Duration timeout = const Duration(seconds: 90),
   }) async {
-    final res = await sendCommand(
-      null,
-      'createSession',
-      {
-        'workspaceId': workspaceId,
-        if (firstText != null)
-          'firstInput': {
-            'text': firstText,
-            if (attachments != null && attachments.isNotEmpty)
-              'attachments': attachments,
-          },
-        if (config != null) 'config': config,
-        if (runtimeModel != null) 'runtimeModel': runtimeModel,
-        if (mcpServers != null && mcpServers.isNotEmpty)
-          'mcpServers': mcpServers,
-      },
-      timeout: timeout,
-    );
+    final res = await sendCommand(null, 'createSession', {
+      'workspaceId': workspaceId,
+      if (firstText != null)
+        'firstInput': {
+          'text': firstText,
+          if (attachments != null && attachments.isNotEmpty)
+            'attachments': attachments,
+          // Desktop puts the composer config (model selection, mode,
+          // planEnabled) into firstInput, not into a separate `config`.
+          ...?firstInputConfig,
+        },
+      if (config != null) 'config': config,
+      if (runtimeModel != null) 'runtimeModel': runtimeModel,
+      if (mcpServers != null && mcpServers.isNotEmpty) 'mcpServers': mcpServers,
+    }, timeout: timeout);
     final map = res is Map ? res.cast<String, dynamic>() : null;
     final status = map?['status'];
     if (status != 'accepted') {
       throw StateError(
-          'createSession rejected: ${map?['reasonCode'] ?? status} ${map?['message'] ?? ''}');
+        'createSession rejected: ${map?['reasonCode'] ?? status} ${map?['message'] ?? ''}',
+      );
     }
     final result = map?['result'];
     final sessionId = result is Map ? result['sessionId'] : null;
@@ -306,13 +303,15 @@ class ConversationTransport {
     final status = map?['status'];
     if (status != 'accepted' && status != 'duplicate') {
       throw StateError(
-          'createSelectionSideSession rejected: ${map?['reasonCode'] ?? status} ${map?['message'] ?? ''}');
+        'createSelectionSideSession rejected: ${map?['reasonCode'] ?? status} ${map?['message'] ?? ''}',
+      );
     }
     final result = map?['result'];
     final sessionId = result is Map ? result['sessionId'] : null;
     if (sessionId is! String || sessionId.isEmpty) {
       throw StateError(
-          'createSelectionSideSession: missing sessionId in result');
+        'createSelectionSideSession: missing sessionId in result',
+      );
     }
     return sessionId;
   }
@@ -323,28 +322,38 @@ class ConversationTransport {
     List<Map<String, dynamic>>? attachments,
     String? heldQueueDisposition,
     List<String>? expectedHeldQueueItemIds,
+    String? requestedDelivery,
+    Map<String, dynamic>? modelSelection,
+    String? mode,
+    bool? planEnabled,
     String? automationId,
     String? offPeakTaskId,
     String? offPeakRunType,
     String? botDeliveryTarget,
     List<String>? toolDisallowlist,
-  }) =>
-      sendCommand(sessionId, 'sendText', {
-        'text': text,
-        if (attachments != null && attachments.isNotEmpty)
-          'attachments': attachments,
-        if (heldQueueDisposition != null)
-          'heldQueueDisposition': heldQueueDisposition,
-        if (expectedHeldQueueItemIds != null &&
-            expectedHeldQueueItemIds.isNotEmpty)
-          'expectedHeldQueueItemIds': expectedHeldQueueItemIds,
-        if (automationId != null) 'automationId': automationId,
-        if (offPeakTaskId != null) 'offPeakTaskId': offPeakTaskId,
-        if (offPeakRunType != null) 'offPeakRunType': offPeakRunType,
-        if (botDeliveryTarget != null) 'botDeliveryTarget': botDeliveryTarget,
-        if (toolDisallowlist != null && toolDisallowlist.isNotEmpty)
-          'toolDisallowlist': toolDisallowlist,
-      });
+  }) => sendCommand(sessionId, 'sendText', {
+    'text': text,
+    if (attachments != null && attachments.isNotEmpty)
+      'attachments': attachments,
+    if (heldQueueDisposition != null)
+      'heldQueueDisposition': heldQueueDisposition,
+    if (expectedHeldQueueItemIds != null && expectedHeldQueueItemIds.isNotEmpty)
+      'expectedHeldQueueItemIds': expectedHeldQueueItemIds,
+    // `startNow` (deliver as guidance while the turn runs) or `queue`
+    // (hold until the turn ends). Desktop sends this only when the user
+    // explicitly chose a delivery; otherwise the server routes by its
+    // inputRouting mode.
+    if (requestedDelivery != null) 'requestedDelivery': requestedDelivery,
+    if (modelSelection != null) 'modelSelection': modelSelection,
+    if (mode != null) 'mode': mode,
+    if (planEnabled != null) 'planEnabled': planEnabled,
+    if (automationId != null) 'automationId': automationId,
+    if (offPeakTaskId != null) 'offPeakTaskId': offPeakTaskId,
+    if (offPeakRunType != null) 'offPeakRunType': offPeakRunType,
+    if (botDeliveryTarget != null) 'botDeliveryTarget': botDeliveryTarget,
+    if (toolDisallowlist != null && toolDisallowlist.isNotEmpty)
+      'toolDisallowlist': toolDisallowlist,
+  });
 
   Future<dynamic> sendGoalCommand(
     String sessionId,
@@ -352,16 +361,14 @@ class ConversationTransport {
     String? displayText,
     String? heldQueueDisposition,
     List<String>? expectedHeldQueueItemIds,
-  }) =>
-      sendCommand(sessionId, 'sendGoalCommand', {
-        'text': text,
-        if (displayText != null) 'displayText': displayText,
-        if (heldQueueDisposition != null)
-          'heldQueueDisposition': heldQueueDisposition,
-        if (expectedHeldQueueItemIds != null &&
-            expectedHeldQueueItemIds.isNotEmpty)
-          'expectedHeldQueueItemIds': expectedHeldQueueItemIds,
-      });
+  }) => sendCommand(sessionId, 'sendGoalCommand', {
+    'text': text,
+    if (displayText != null) 'displayText': displayText,
+    if (heldQueueDisposition != null)
+      'heldQueueDisposition': heldQueueDisposition,
+    if (expectedHeldQueueItemIds != null && expectedHeldQueueItemIds.isNotEmpty)
+      'expectedHeldQueueItemIds': expectedHeldQueueItemIds,
+  });
 
   Future<dynamic> pauseGoal(String sessionId) =>
       sendCommand(sessionId, 'pauseGoal', {});
@@ -374,43 +381,83 @@ class ConversationTransport {
   Future<dynamic> compact(String sessionId) =>
       sendCommand(sessionId, 'compact', {});
 
-  /// Switch model config. All of provider/model/thought are required by the
-  /// protocol schema — pass current values for the ones not changing.
-  /// Thought levels differ per model family (GLM-5.2: max/high/nothink;
-  /// Turbo: enabled/off), so on `Unsupported reasoning effort` we retry
-  /// with the other family's default.
-  Future<dynamic> switchModelConfig(
-    String sessionId, {
-    required String provider,
-    required String model,
-    required String thought,
-  }) async {
-    var res = await sendCommand(sessionId, 'switchModelConfig', {
-      'provider': provider,
-      'model': model,
-      'thought': thought,
-    });
-    final message = res is Map ? '${res['message'] ?? ''}' : '';
-    if (message.contains('Unsupported reasoning effort')) {
-      final fallback =
-          (thought == 'enabled' || thought == 'off') ? 'max' : 'enabled';
-      _log('[v4] switchModelConfig retry with thought=$fallback');
-      res = await sendCommand(sessionId, 'switchModelConfig', {
-        'provider': provider,
-        'model': model,
-        'thought': fallback,
-      });
-    }
-    return res;
-  }
-
-  /// build / edit / plan / yolo. Mirrors `switchCollaborationMode`.
-  Future<dynamic> switchCollaborationMode(String sessionId, String mode) =>
-      sendCommand(sessionId, 'switchCollaborationMode', {'mode': mode});
+  // Note: 3.17 has no `switchModelConfig` / `switchCollaborationMode`
+  // commands. The desktop keeps the chosen model, reasoning level and mode in
+  // the composer draft and ships them with the next `sendText` (or
+  // `createSession.firstInput`). See `AppState.send`.
 
   /// queue / guide followup. Mirrors `setFollowupMode`.
   Future<dynamic> setFollowupMode(String sessionId, String mode) =>
       sendCommand(sessionId, 'setFollowupMode', {'mode': mode});
+
+  /// Desktop composer model catalog (`modelSelectionService.getView()`).
+  /// Works over the already-paired relay — no LAN bridge required.
+  Future<dynamic> modelSelectionView() =>
+      _channels.call(Channels.modelSelection, 'getView', []);
+
+  // ------------------------------------------------- task management
+  // The desktop task sidebar calls these through the `zcode-task` / `project`
+  // channels (asar: renameTask, archiveTask, moveTask).
+
+  Map<String, dynamic> _taskRef(String sessionId) => {
+    'taskId': sessionId,
+    'workspacePath': scope['workspacePath'],
+    if (scope['workspaceIdentity'] != null)
+      'workspaceIdentity': scope['workspaceIdentity'],
+  };
+
+  Future<dynamic> renameTask(String sessionId, String title) =>
+      _channels.call(Channels.zcodeTask, 'renameTask', [
+        {..._taskRef(sessionId), 'title': title},
+      ]);
+
+  Future<dynamic> archiveTask(String sessionId, {bool archived = true}) =>
+      _channels.call(
+        Channels.zcodeTask,
+        archived ? 'archiveTask' : 'unarchiveTask',
+        [_taskRef(sessionId)],
+      );
+
+  Future<dynamic> setTaskPinned(String sessionId, bool pinned) =>
+      _channels.call(Channels.zcodeTask, 'setTaskPinned', [
+        {..._taskRef(sessionId), 'pinned': pinned},
+      ]);
+
+  /// Deletes the task server-side (the desktop uses V4 `deleteSession`).
+  Future<dynamic> deleteSession(String sessionId) =>
+      sendCommand(sessionId, 'deleteSession', {});
+
+  /// Projects + all their tasks known to the desktop. This is the same call
+  /// the desktop project sidebar makes and it works over the active bridge —
+  /// no second workspace bridge is needed.
+  Future<Map<String, dynamic>> readProjectTree() async {
+    final res = await _channels.call(Channels.project, 'readTree', [
+      {'includeDeleted': true, 'includeDeletedTasks': true},
+    ]);
+    return res is Map ? res.cast<String, dynamic>() : const {};
+  }
+
+  /// Projects known to the desktop: id, name, roots, hostId.
+  Future<List<Map<String, dynamic>>> readProjects() async {
+    final tree = await readProjectTree();
+    final projects = tree['projects'];
+    if (projects is! List) return const [];
+    return projects
+        .whereType<Map>()
+        .map((e) => e.cast<String, dynamic>())
+        .where((p) => p['deleted'] != true)
+        .toList();
+  }
+
+  /// Moves a task into another desktop project.
+  Future<dynamic> moveTask(String sessionId, String projectId) =>
+      _channels.call(Channels.project, 'moveTask', [
+        {
+          'task': _taskRef(sessionId),
+          'projectId': projectId,
+          'addMissingRoot': false,
+        },
+      ]);
 
   /// like / dislike / null on an assistant row. Target is
   /// `{rowId, entityId}` (entityId optional for some row kinds).
@@ -418,11 +465,10 @@ class ConversationTransport {
     String sessionId,
     Map<String, dynamic> target,
     String? feedback,
-  ) =>
-      sendCommand(sessionId, 'setAssistantFeedback', {
-        'target': target,
-        'feedback': feedback,
-      });
+  ) => sendCommand(sessionId, 'setAssistantFeedback', {
+    'target': target,
+    'feedback': feedback,
+  });
 
   Future<dynamic> retryTurn(String sessionId, Map<String, dynamic> target) =>
       sendCommand(sessionId, 'retryTurn', {'target': target});
@@ -431,9 +477,13 @@ class ConversationTransport {
       sendCommand(sessionId, 'sendQueuedNow', {'queueItemId': queueItemId});
 
   Future<dynamic> editQueueItem(
-          String sessionId, String queueItemId, String newText) =>
-      sendCommand(sessionId, 'editQueueItem',
-          {'queueItemId': queueItemId, 'newText': newText});
+    String sessionId,
+    String queueItemId,
+    String newText,
+  ) => sendCommand(sessionId, 'editQueueItem', {
+    'queueItemId': queueItemId,
+    'newText': newText,
+  });
 
   Future<dynamic> deleteQueueItem(String sessionId, String queueItemId) =>
       sendCommand(sessionId, 'deleteQueueItem', {'queueItemId': queueItemId});
@@ -442,20 +492,23 @@ class ConversationTransport {
       sendCommand(sessionId, 'setAutoDrain', {'autoDrain': autoDrain});
 
   Future<dynamic> forkAssistant(
-          String sessionId, Map<String, dynamic> target) =>
-      sendCommand(sessionId, 'forkAssistant', {'target': target});
+    String sessionId,
+    Map<String, dynamic> target,
+  ) => sendCommand(sessionId, 'forkAssistant', {'target': target});
 
   Future<dynamic> editUserQuery(
     String sessionId,
     Map<String, dynamic> target,
     String newText,
-  ) =>
-      sendCommand(
-          sessionId, 'editUserQuery', {'target': target, 'newText': newText});
+  ) => sendCommand(sessionId, 'editUserQuery', {
+    'target': target,
+    'newText': newText,
+  });
 
   Future<dynamic> applyFileRewind(
-          String sessionId, Map<String, dynamic> target) =>
-      sendCommand(sessionId, 'applyFileRewind', {'target': target});
+    String sessionId,
+    Map<String, dynamic> target,
+  ) => sendCommand(sessionId, 'applyFileRewind', {'target': target});
 
   Future<dynamic> plans(String sessionId) async {
     await handshake();
@@ -627,16 +680,15 @@ class ConversationTransport {
     String? freeText,
     String? action,
     Map<String, dynamic>? content,
-  }) =>
-      sendCommand(sessionId, 'resolveInteraction', {
-        'interactionId': interactionId,
-        'answer': {
-          if (optionId != null) 'optionId': optionId,
-          if (freeText != null) 'freeText': freeText,
-          if (action != null) 'action': action,
-          if (content != null) 'content': content,
-        },
-      });
+  }) => sendCommand(sessionId, 'resolveInteraction', {
+    'interactionId': interactionId,
+    'answer': {
+      if (optionId != null) 'optionId': optionId,
+      if (freeText != null) 'freeText': freeText,
+      if (action != null) 'action': action,
+      if (content != null) 'content': content,
+    },
+  });
 
   Future<dynamic> rowsRange(
     String sessionId, {
@@ -680,11 +732,9 @@ class ConversationTransport {
   Future<WorkspacePrep> prepareWorkspace({bool refresh = false}) async {
     final cached = _prep;
     if (cached != null && !refresh) return cached;
-    final res = await _channels.call(
-      Channels.zcodeTask,
-      'prepareWorkspace',
-      [scope],
-    );
+    final res = await _channels.call(Channels.zcodeTask, 'prepareWorkspace', [
+      scope,
+    ]);
     final prep = WorkspacePrep._(res is Map ? res : const {});
     _prep = prep;
     return prep;
@@ -695,19 +745,14 @@ class ConversationTransport {
   /// `$name`. Returns an empty list when the channel rejects or returns no
   /// skill data.
   Future<List<SkillEntry>> skills() async {
-    final res = await _channels.call(
-      Channels.skills,
-      'list',
-      [
-        {
-          'workspacePath': scope['workspacePath'],
-          if (scope['workspaceIdentity'] != null)
-            'workspaceIdentity': scope['workspaceIdentity'],
-          'provider': 'glm',
-        },
-      ],
-      timeout: const Duration(seconds: 20),
-    );
+    final res = await _channels.call(Channels.skills, 'list', [
+      {
+        'workspacePath': scope['workspacePath'],
+        if (scope['workspaceIdentity'] != null)
+          'workspaceIdentity': scope['workspaceIdentity'],
+        'provider': 'glm',
+      },
+    ], timeout: const Duration(seconds: 20));
     final raw = res is List ? res : (res is Map ? res['skills'] : null);
     if (raw is! List) return const [];
     return [
@@ -739,8 +784,10 @@ abstract class _SubscriptionBase<T extends ChangeNotifier> {
 
   _SubscriptionBase(this._transport, this.state, this._logTag) {
     _transport.session.recovered.addListener(_onBridgeRecovered);
-    _fragmentCleanup =
-        Timer.periodic(const Duration(seconds: 30), (_) => _purgeFragments());
+    _fragmentCleanup = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _purgeFragments(),
+    );
   }
 
   // --- abstract: subclasses define channel/protocol specifics
@@ -813,7 +860,7 @@ abstract class _SubscriptionBase<T extends ChangeNotifier> {
         ConversationTransport.channel,
         _subscribeMethod,
         [
-          {..._transport.scope, ..._subscribeArgs}
+          {..._transport.scope, ..._subscribeArgs},
         ],
         // The desktop may need to warm the session runtime before answering —
         // give the subscribe call generous room instead of timing out at the
@@ -864,7 +911,7 @@ abstract class _SubscriptionBase<T extends ChangeNotifier> {
           ConversationTransport.channel,
           _unsubscribeMethod,
           [
-            {..._transport.scope, 'subscriptionId': oldId, ..._unsubscribeArgs}
+            {..._transport.scope, 'subscriptionId': oldId, ..._unsubscribeArgs},
           ],
         );
       } catch (_) {}
@@ -914,8 +961,10 @@ abstract class _SubscriptionBase<T extends ChangeNotifier> {
       return;
     }
     if (count < 1 || count > 64 || index < 0 || index >= count) return;
-    final assembly =
-        _fragments.putIfAbsent(id, () => _LogicalFrameAssembly(count));
+    final assembly = _fragments.putIfAbsent(
+      id,
+      () => _LogicalFrameAssembly(count),
+    );
     if (assembly.count != count) {
       _fragments.remove(id);
       return;
@@ -945,7 +994,8 @@ abstract class _SubscriptionBase<T extends ChangeNotifier> {
     if (id == null || _disposed || _resyncing) return;
     _resyncing = true;
     _transport._log(
-        '[$_logTag] resync (gap detected) seq=$_resyncSeq logEpoch=$_resyncEpoch');
+      '[$_logTag] resync (gap detected) seq=$_resyncSeq logEpoch=$_resyncEpoch',
+    );
     try {
       await _transport._channels.call(
         ConversationTransport.channel,
@@ -997,7 +1047,7 @@ class ConversationSubscription extends _SubscriptionBase<ConversationState> {
   Timer? _watchdog;
 
   ConversationSubscription._(ConversationTransport transport, this.sessionId)
-      : super(transport, ConversationState(), 'v4');
+    : super(transport, ConversationState(), 'v4');
 
   @override
   String get _frameEventName => 'onDynamicConversationFrame';
@@ -1068,7 +1118,8 @@ class ConversationSubscription extends _SubscriptionBase<ConversationState> {
       final streaming = state.rows.any((r) => r['state'] == 'streaming');
       if (state.isRunning || streaming) {
         _transport._log(
-            '[v4] watchdog: no frames for ${quietSeconds}s while active, resync');
+          '[v4] watchdog: no frames for ${quietSeconds}s while active, resync',
+        );
         _resync();
       }
     });
@@ -1081,16 +1132,16 @@ class WorkspacePrep {
   final Map raw;
 
   WorkspacePrep._(this.raw)
-      : configOptions = [
-          if (raw['configOptions'] is List)
-            for (final o in raw['configOptions'] as List)
-              if (o is Map) ConfigOption._(o),
-        ],
-        slashCommands = [
-          if (raw['slashCommands'] is List)
-            for (final c in raw['slashCommands'] as List)
-              if (c is Map) SlashCommand._(c),
-        ];
+    : configOptions = [
+        if (raw['configOptions'] is List)
+          for (final o in raw['configOptions'] as List)
+            if (o is Map) ConfigOption._(o),
+      ],
+      slashCommands = [
+        if (raw['slashCommands'] is List)
+          for (final c in raw['slashCommands'] as List)
+            if (c is Map) SlashCommand._(c),
+      ];
 
   ConfigOption? option(String id) {
     for (final o in configOptions) {
@@ -1111,13 +1162,13 @@ class SkillEntry {
   final bool enabled;
 
   SkillEntry._(Map raw)
-      : id = '${raw['id'] ?? ''}',
-        name = '${raw['name'] ?? ''}',
-        path = '${raw['path'] ?? ''}',
-        scope = '${raw['scope'] ?? 'workspace'}',
-        description = raw['description'] as String?,
-        argumentHint = raw['argumentHint'] as String?,
-        enabled = raw['enabled'] != false;
+    : id = '${raw['id'] ?? ''}',
+      name = '${raw['name'] ?? ''}',
+      path = '${raw['path'] ?? ''}',
+      scope = '${raw['scope'] ?? 'workspace'}',
+      description = raw['description'] as String?,
+      argumentHint = raw['argumentHint'] as String?,
+      enabled = raw['enabled'] != false;
 }
 
 class ConfigOption {
@@ -1129,16 +1180,16 @@ class ConfigOption {
   final List<ConfigOptionValue> options;
 
   ConfigOption._(Map raw)
-      : id = '${raw['id'] ?? ''}',
-        name = '${raw['name'] ?? ''}',
-        category = '${raw['category'] ?? ''}',
-        type = '${raw['type'] ?? ''}',
-        currentValue = raw['currentValue'],
-        options = [
-          if (raw['options'] is List)
-            for (final v in raw['options'] as List)
-              if (v is Map) ConfigOptionValue._(v),
-        ];
+    : id = '${raw['id'] ?? ''}',
+      name = '${raw['name'] ?? ''}',
+      category = '${raw['category'] ?? ''}',
+      type = '${raw['type'] ?? ''}',
+      currentValue = raw['currentValue'],
+      options = [
+        if (raw['options'] is List)
+          for (final v in raw['options'] as List)
+            if (v is Map) ConfigOptionValue._(v),
+      ];
 }
 
 class ConfigOptionValue {
@@ -1148,10 +1199,10 @@ class ConfigOptionValue {
   final String? modelProviderName;
 
   ConfigOptionValue._(Map raw)
-      : value = '${raw['value'] ?? ''}',
-        name = '${raw['name'] ?? raw['value'] ?? ''}',
-        description = raw['description'] as String?,
-        modelProviderName = raw['modelProviderName'] as String?;
+    : value = '${raw['value'] ?? ''}',
+      name = '${raw['name'] ?? raw['value'] ?? ''}',
+      description = raw['description'] as String?,
+      modelProviderName = raw['modelProviderName'] as String?;
 }
 
 class SlashCommand {
@@ -1161,10 +1212,10 @@ class SlashCommand {
   final String source;
 
   SlashCommand._(Map raw)
-      : name = '${raw['name'] ?? ''}',
-        description = '${raw['description'] ?? ''}',
-        inputHint = raw['inputHint'] as String?,
-        source = '${raw['source'] ?? ''}';
+    : name = '${raw['name'] ?? ''}',
+      description = '${raw['description'] ?? ''}',
+      inputHint = raw['inputHint'] as String?,
+      source = '${raw['source'] ?? ''}';
 }
 
 class _LogicalFrameAssembly {
@@ -1207,16 +1258,16 @@ class SessionEntry {
   final Map<String, dynamic> raw;
 
   SessionEntry(this.raw)
-      : sessionId = '${raw['sessionId'] ?? ''}',
-        parentSessionId = raw['parentSessionId'] as String?,
-        title = '${raw['title'] ?? ''}',
-        phase = '${raw['phase'] ?? ''}',
-        lastAssistantPreview = raw['lastAssistantPreview'] as String?,
-        lastActivityAt = (raw['lastActivityAt'] as num?)?.toInt() ?? 0,
-        createdAt = (raw['createdAt'] as num?)?.toInt() ?? 0,
-        hasBackgroundWork = raw['hasBackgroundWork'] == true,
-        pendingInteraction =
-            (raw['pendingInteraction'] as Map?)?.cast<String, dynamic>();
+    : sessionId = '${raw['sessionId'] ?? ''}',
+      parentSessionId = raw['parentSessionId'] as String?,
+      title = '${raw['title'] ?? ''}',
+      phase = '${raw['phase'] ?? ''}',
+      lastAssistantPreview = raw['lastAssistantPreview'] as String?,
+      lastActivityAt = (raw['lastActivityAt'] as num?)?.toInt() ?? 0,
+      createdAt = (raw['createdAt'] as num?)?.toInt() ?? 0,
+      hasBackgroundWork = raw['hasBackgroundWork'] == true,
+      pendingInteraction = (raw['pendingInteraction'] as Map?)
+          ?.cast<String, dynamic>();
 }
 
 class SessionsIndexState extends ChangeNotifier {
@@ -1232,8 +1283,10 @@ class SessionsIndexState extends ChangeNotifier {
     return values;
   }
 
-  void applyFrame(Map<String, dynamic> frame,
-      {required void Function() onGap}) {
+  void applyFrame(
+    Map<String, dynamic> frame, {
+    required void Function() onGap,
+  }) {
     final payload = frame['payload'];
     if (payload is! Map) return;
     final toSeq = (frame['toSeq'] as num?)?.toInt() ?? seq;
@@ -1264,8 +1317,9 @@ class SessionsIndexState extends ChangeNotifier {
         for (final d in deltas) {
           if (d is! Map) continue;
           if (d['op'] == 'session.upserted' && d['session'] is Map) {
-            final entry =
-                SessionEntry((d['session'] as Map).cast<String, dynamic>());
+            final entry = SessionEntry(
+              (d['session'] as Map).cast<String, dynamic>(),
+            );
             sessions[entry.sessionId] = entry;
           } else if (d['op'] == 'session.removed') {
             sessions.remove('${d['sessionId']}');
@@ -1277,11 +1331,23 @@ class SessionsIndexState extends ChangeNotifier {
     ready = true;
     notifyListeners();
   }
+
+  /// Local echo for rename/delete before the next sessions-index delta.
+  void optimisticRename(String id, String title) {
+    final entry = sessions[id];
+    if (entry == null) return;
+    sessions[id] = SessionEntry({...entry.raw, 'title': title});
+    notifyListeners();
+  }
+
+  void optimisticRemove(String id) {
+    if (sessions.remove(id) != null) notifyListeners();
+  }
 }
 
 class SessionsIndexSubscription extends _SubscriptionBase<SessionsIndexState> {
   SessionsIndexSubscription._(ConversationTransport transport)
-      : super(transport, SessionsIndexState(), 'v4-si');
+    : super(transport, SessionsIndexState(), 'v4-si');
 
   @override
   String get _frameEventName => 'onDynamicSessionsIndexFrame';
@@ -1292,14 +1358,17 @@ class SessionsIndexSubscription extends _SubscriptionBase<SessionsIndexState> {
   @override
   String get _resyncMethod => 'resyncSessionsIndexV4';
   @override
-  Map<String, dynamic> get _subscribeArgs =>
-      const {'runtimePolicy': 'existing-only'};
+  Map<String, dynamic> get _subscribeArgs => const {
+    'runtimePolicy': 'existing-only',
+  };
   @override
-  Map<String, dynamic> get _unsubscribeArgs =>
-      const {'runtimePolicy': 'existing-only'};
+  Map<String, dynamic> get _unsubscribeArgs => const {
+    'runtimePolicy': 'existing-only',
+  };
   @override
-  Map<String, dynamic> get _resyncArgs =>
-      const {'runtimePolicy': 'existing-only'};
+  Map<String, dynamic> get _resyncArgs => const {
+    'runtimePolicy': 'existing-only',
+  };
   @override
   String get topic =>
       'sessions-index/${_transport.scope['workspaceIdentity'] ?? _transport.scope['workspacePath']}';
@@ -1416,8 +1485,9 @@ class ConversationState extends ChangeNotifier {
       case 'row.upserted':
         final row = (delta['row'] as Map).cast<String, dynamic>();
         final id = (row['rowId'] as num?)?.toInt();
-        final index =
-            rows.indexWhere((r) => (r['rowId'] as num?)?.toInt() == id);
+        final index = rows.indexWhere(
+          (r) => (r['rowId'] as num?)?.toInt() == id,
+        );
         if (index != -1) rows[index] = row;
         break;
       case 'row.removed':
@@ -1440,8 +1510,9 @@ class ConversationState extends ChangeNotifier {
         final rowId = (delta['rowId'] as num?)?.toInt();
         final path = delta['path'] as String?;
         final append = delta['append'] as String? ?? '';
-        final index =
-            rows.indexWhere((r) => (r['rowId'] as num?)?.toInt() == rowId);
+        final index = rows.indexWhere(
+          (r) => (r['rowId'] as num?)?.toInt() == rowId,
+        );
         if (index != -1) {
           rows[index] = _appendToRow(rows[index], path, append);
         }
@@ -1478,8 +1549,9 @@ class ConversationState extends ChangeNotifier {
   /// Optimistic row edit (e.g. feedback) — mutates the row in place and
   /// notifies; the server row.upserted will confirm.
   void optimisticRowUpdate(num? rowId, Map<String, dynamic> patch) {
-    final index =
-        rows.indexWhere((r) => (r['rowId'] as num?)?.toInt() == rowId?.toInt());
+    final index = rows.indexWhere(
+      (r) => (r['rowId'] as num?)?.toInt() == rowId?.toInt(),
+    );
     if (index == -1) return;
     rows[index] = {...rows[index], ...patch};
     notifyListeners();
@@ -1501,7 +1573,10 @@ class ConversationState extends ChangeNotifier {
 
   /// Mirrors `dke()`: append streamed text to a row field.
   Map<String, dynamic> _appendToRow(
-      Map<String, dynamic> row, String? path, String append) {
+    Map<String, dynamic> row,
+    String? path,
+    String append,
+  ) {
     switch (path) {
       case 'text':
         if (row['kind'] == 'assistantText' || row['kind'] == 'reasoning') {
@@ -1524,10 +1599,7 @@ class ConversationState extends ChangeNotifier {
         return row;
       case 'summaryText':
         if (row['kind'] == 'subagent') {
-          return {
-            ...row,
-            'summaryText': '${row['summaryText'] ?? ''}$append',
-          };
+          return {...row, 'summaryText': '${row['summaryText'] ?? ''}$append'};
         }
         return row;
       default:

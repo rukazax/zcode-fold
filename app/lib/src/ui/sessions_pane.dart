@@ -14,12 +14,15 @@ class SessionsPane extends StatefulWidget {
     required this.onOpen,
     required this.onNew,
     required this.onSettings,
+    this.onOpenInProject,
     this.onCollapse,
     this.showHeader = true,
   });
 
   final AppState state;
   final void Function(SessionSummary session) onOpen;
+  final void Function(ProjectFeed feed, SessionSummary session)?
+  onOpenInProject;
   final VoidCallback onNew;
   final VoidCallback onSettings;
   final VoidCallback? onCollapse;
@@ -42,16 +45,65 @@ class _SessionsPaneState extends State<SessionsPane> {
   @override
   Widget build(BuildContext context) {
     final state = widget.state;
-    final all = state.sessions;
-    final filtered = _query.isEmpty
-        ? all
-        : all
-            .where((s) =>
+    List<SessionSummary> filter(List<SessionSummary> list) {
+      if (_query.isEmpty) return list;
+      return list
+          .where(
+            (s) =>
                 s.displayTitle.toLowerCase().contains(_query) ||
-                (s.preview ?? '').toLowerCase().contains(_query))
-            .toList();
-    final pinned = filtered.where((s) => state.isPinned(s.sessionId)).toList();
-    final rest = filtered.where((s) => !state.isPinned(s.sessionId)).toList();
+                (s.preview ?? '').toLowerCase().contains(_query),
+          )
+          .toList();
+    }
+
+    // Project → tasks. The active project is backed by the live
+    // sessions-index; the others come from `project.readTree`.
+    final projects = <_ProjectGroup>[];
+    final activeWorkspace = state.workspace;
+    if (activeWorkspace != null) {
+      final key = AppState.workspaceKeyOf(activeWorkspace);
+      if (key != null) {
+        projects.add(
+          _ProjectGroup(
+            key: key,
+            title: AppState.workspaceTitle(activeWorkspace),
+            sessions: filter(state.sessions),
+            loading: state.sessionsLoading,
+            active: true,
+            workspace: activeWorkspace,
+          ),
+        );
+      }
+    }
+    for (final feed in state.projectFeeds) {
+      final target = feed.appWorkspace ?? feed.project;
+      final targetKey = AppState.workspaceKeyOf(target);
+      if (targetKey == state.workspaceKey) continue;
+      projects.add(
+        _ProjectGroup(
+          key: feed.key,
+          title: feed.title,
+          sessions: filter(feed.sessions),
+          loading: feed.loading,
+          error: feed.error,
+          active: false,
+          workspace: target,
+          feed: feed,
+        ),
+      );
+    }
+
+    final pinned = <(_ProjectGroup, SessionSummary)>[];
+    for (final group in projects) {
+      for (final s in group.sessions) {
+        if (state.isPinned(s.sessionId)) pinned.add((group, s));
+      }
+    }
+    final hasAny = projects.any((g) => g.sessions.isNotEmpty);
+    final queryMiss =
+        _query.isNotEmpty &&
+        pinned.isEmpty &&
+        projects.every((g) => g.sessions.isEmpty);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -65,49 +117,140 @@ class _SessionsPaneState extends State<SessionsPane> {
             child: _banner(state.relayError!),
           ),
         Expanded(
-          child: state.sessionsLoading
+          child: state.sessionsLoading && !hasAny
               ? Center(
                   child: SizedBox(
                     width: 22,
                     height: 22,
                     child: CircularProgressIndicator(
-                        strokeWidth: 2, color: Pal.accent),
+                      strokeWidth: 2,
+                      color: Pal.accent,
+                    ),
                   ),
                 )
-              : all.isEmpty
-                  ? _empty(context)
-                  : RefreshIndicator(
-                      color: Pal.accent,
-                      backgroundColor: Pal.surface,
-                      onRefresh: () async {
-                        final w = state.workspace;
-                        if (w != null) await state.openWorkspace(w);
-                      },
-                      child: ListView(
-                        physics: AlwaysScrollableScrollPhysics(),
-                        padding: EdgeInsets.fromLTRB(8, 2, 8, 12),
-                        children: [
-                          if (state.workspaces.length > 1)
-                            _workspaceSwitcher(context),
-                          if (pinned.isNotEmpty) ...[
-                            _sectionLabel(context, 'Закреплённые',
-                                icon: Icons.push_pin_outlined),
-                            for (final s in pinned) _sessionTile(context, s),
-                          ],
-                          _sectionLabel(context, 'Задачи',
-                              icon: Icons.view_list_outlined),
-                          if (rest.isEmpty && _query.isNotEmpty)
-                            Padding(
-                              padding: EdgeInsets.all(16),
-                              child: Text('Ничего не найдено',
-                                  style: TextStyle(color: Pal.muted, fontSize: 12.5)),
-                            ),
-                          for (final s in rest) _sessionTile(context, s),
-                        ],
-                      ),
-                    ),
+              : !hasAny && state.projectFeeds.isEmpty
+              ? _empty(context)
+              : RefreshIndicator(
+                  color: Pal.accent,
+                  backgroundColor: Pal.surface,
+                  onRefresh: () async {
+                    final w = state.workspace;
+                    if (w != null) await state.openWorkspace(w);
+                  },
+                  child: ListView(
+                    physics: AlwaysScrollableScrollPhysics(),
+                    padding: EdgeInsets.fromLTRB(8, 2, 8, 12),
+                    children: [
+                      if (pinned.isNotEmpty) ...[
+                        _sectionLabel(
+                          context,
+                          'Закреплённые',
+                          icon: Icons.push_pin_outlined,
+                        ),
+                        for (final (group, s) in pinned)
+                          _sessionTile(
+                            context,
+                            s,
+                            group: group,
+                            showProject: projects.length > 1,
+                          ),
+                      ],
+                      if (queryMiss)
+                        Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Text(
+                            'Ничего не найдено',
+                            style: TextStyle(color: Pal.muted, fontSize: 12.5),
+                          ),
+                        ),
+                      for (final group in projects)
+                        _projectSection(context, group),
+                    ],
+                  ),
+                ),
         ),
         _footer(context),
+      ],
+    );
+  }
+
+  Widget _projectSection(BuildContext context, _ProjectGroup group) {
+    final state = widget.state;
+    final rest = group.sessions
+        .where((s) => !state.isPinned(s.sessionId))
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: group.active || group.workspace == null
+              ? null
+              : () => state.openWorkspace(
+                  group.feed?.appWorkspace ?? group.workspace!,
+                ),
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(8, 10, 6, 4),
+            child: Row(
+              children: [
+                Icon(
+                  group.active
+                      ? Icons.folder_open_rounded
+                      : Icons.folder_outlined,
+                  size: 14,
+                  color: group.active ? Pal.accent : Pal.muted,
+                ),
+                SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    group.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: group.active ? Pal.text : Pal.muted,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                ),
+                if (group.loading)
+                  SizedBox(
+                    width: 10,
+                    height: 10,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.5,
+                      color: Pal.muted,
+                    ),
+                  )
+                else
+                  Text(
+                    '${group.sessions.length}',
+                    style: TextStyle(color: Pal.muted, fontSize: 10),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        if (group.error != null)
+          Padding(
+            padding: EdgeInsets.fromLTRB(30, 0, 8, 6),
+            child: Text(
+              group.error!,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: Color(0xFFE3B341), fontSize: 10.5),
+            ),
+          )
+        else if (!group.loading && rest.isEmpty)
+          Padding(
+            padding: EdgeInsets.fromLTRB(30, 0, 8, 4),
+            child: Text(
+              'нет задач',
+              style: TextStyle(color: Pal.muted, fontSize: 10.5),
+            ),
+          ),
+        for (final s in rest) _sessionTile(context, s, group: group),
       ],
     );
   }
@@ -138,9 +281,14 @@ class _SessionsPaneState extends State<SessionsPane> {
               borderRadius: BorderRadius.circular(10),
             ),
             alignment: Alignment.center,
-            child: Text('Z',
-                style: TextStyle(
-                    color: Pal.accent, fontWeight: FontWeight.w900, fontSize: 17)),
+            child: Text(
+              'Z',
+              style: TextStyle(
+                color: Pal.accent,
+                fontWeight: FontWeight.w900,
+                fontSize: 17,
+              ),
+            ),
           ),
           SizedBox(width: 9),
           Expanded(
@@ -153,25 +301,27 @@ class _SessionsPaneState extends State<SessionsPane> {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
                 ),
-                Row(children: [
-                  Container(
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(
-                      color: state.connected ? Pal.accent : Color(0xFFE3B341),
-                      shape: BoxShape.circle,
+                Row(
+                  children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: state.connected ? Pal.accent : Color(0xFFE3B341),
+                        shape: BoxShape.circle,
+                      ),
                     ),
-                  ),
-                  SizedBox(width: 6),
-                  Flexible(
-                    child: Text(
-                      status,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: Pal.muted, fontSize: 11),
+                    SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        status,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: Pal.muted, fontSize: 11),
+                      ),
                     ),
-                  ),
-                ]),
+                  ],
+                ),
               ],
             ),
           ),
@@ -179,8 +329,11 @@ class _SessionsPaneState extends State<SessionsPane> {
             IconButton(
               tooltip: 'Свернуть список',
               onPressed: widget.onCollapse,
-              icon: Icon(Icons.keyboard_double_arrow_left_rounded,
-                  size: 18, color: Pal.muted),
+              icon: Icon(
+                Icons.keyboard_double_arrow_left_rounded,
+                size: 18,
+                color: Pal.muted,
+              ),
             ),
           PopupMenuButton<String>(
             tooltip: 'Ещё',
@@ -191,8 +344,14 @@ class _SessionsPaneState extends State<SessionsPane> {
               if (value == 'settings') widget.onSettings();
             },
             itemBuilder: (_) => const [
-              PopupMenuItem(value: 'reconnect', child: Text('Переподключиться')),
-              PopupMenuItem(value: 'settings', child: Text('Настройки приложения')),
+              PopupMenuItem(
+                value: 'reconnect',
+                child: Text('Переподключиться'),
+              ),
+              PopupMenuItem(
+                value: 'settings',
+                child: Text('Настройки приложения'),
+              ),
             ],
           ),
         ],
@@ -229,8 +388,7 @@ class _SessionsPaneState extends State<SessionsPane> {
           isDense: true,
           hintText: 'Поиск по задачам',
           prefixIcon: Icon(Icons.search_rounded, size: 18, color: Pal.muted),
-          prefixIconConstraints:
-              BoxConstraints(minWidth: 34, minHeight: 30),
+          prefixIconConstraints: BoxConstraints(minWidth: 34, minHeight: 30),
           suffixIcon: _query.isEmpty
               ? null
               : IconButton(
@@ -257,58 +415,44 @@ class _SessionsPaneState extends State<SessionsPane> {
             Icon(icon, size: 12, color: Pal.muted),
             SizedBox(width: 5),
           ],
-          Text(label,
-              style: TextStyle(
-                  color: Pal.muted, fontSize: 10.5, fontWeight: FontWeight.w600)),
+          Text(
+            label,
+            style: TextStyle(
+              color: Pal.muted,
+              fontSize: 10.5,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _workspaceSwitcher(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.fromLTRB(8, 2, 8, 4),
-      child: SizedBox(
-        height: 30,
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          children: [
-            for (final w in widget.state.workspaces)
-              Padding(
-                padding: EdgeInsets.only(right: 6),
-                child: ChoiceChip(
-                  label: Text(AppState.workspaceTitle(w),
-                      style: TextStyle(fontSize: 11)),
-                  selected: AppState.workspaceKeyOf(w) == widget.state.workspaceKey,
-                  selectedColor: Pal.accent.withValues(alpha: 0.2),
-                  backgroundColor: Pal.surface,
-                  side: BorderSide(color: Pal.border),
-                  visualDensity: VisualDensity.compact,
-                  onSelected: (_) => widget.state.openWorkspace(w),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _sessionTile(BuildContext context, SessionSummary session) {
+  Widget _sessionTile(
+    BuildContext context,
+    SessionSummary session, {
+    _ProjectGroup? group,
+    bool showProject = false,
+  }) {
     final state = widget.state;
     final pinned = state.isPinned(session.sessionId);
     final active = state.sessionId == session.sessionId;
     return InkWell(
       borderRadius: BorderRadius.circular(10),
-      onTap: () => widget.onOpen(session),
-      onLongPress: () => _showSessionMenu(context, session),
+      onTap: () => _open(group, session),
+      onLongPress: () => _showSessionMenu(context, session, group: group),
       child: Container(
         margin: EdgeInsets.only(bottom: 4),
         padding: EdgeInsets.fromLTRB(10, 8, 6, 8),
         decoration: BoxDecoration(
-          color: active ? Pal.accent.withValues(alpha: 0.10) : Colors.transparent,
+          color: active
+              ? Pal.accent.withValues(alpha: 0.10)
+              : Colors.transparent,
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
-            color: active ? Pal.accent.withValues(alpha: 0.35) : Colors.transparent,
+            color: active
+                ? Pal.accent.withValues(alpha: 0.35)
+                : Colors.transparent,
           ),
         ),
         child: Row(
@@ -321,7 +465,9 @@ class _SessionsPaneState extends State<SessionsPane> {
                       width: 10,
                       height: 10,
                       child: CircularProgressIndicator(
-                          strokeWidth: 1.8, color: Pal.accent),
+                        strokeWidth: 1.8,
+                        color: Pal.accent,
+                      ),
                     )
                   : Container(
                       width: 6,
@@ -350,6 +496,16 @@ class _SessionsPaneState extends State<SessionsPane> {
                       fontWeight: active ? FontWeight.w600 : FontWeight.w500,
                     ),
                   ),
+                  if (showProject && group != null)
+                    Padding(
+                      padding: EdgeInsets.only(top: 1),
+                      child: Text(
+                        group.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: Pal.accent, fontSize: 9.5),
+                      ),
+                    ),
                   if (session.preview != null &&
                       session.preview!.trim().isNotEmpty)
                     Padding(
@@ -359,7 +515,10 @@ class _SessionsPaneState extends State<SessionsPane> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                            color: Pal.muted, fontSize: 11, height: 1.3),
+                          color: Pal.muted,
+                          fontSize: 11,
+                          height: 1.3,
+                        ),
                       ),
                     ),
                 ],
@@ -369,13 +528,22 @@ class _SessionsPaneState extends State<SessionsPane> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                Text(formatTime(session.updatedAt),
-                    style: TextStyle(color: Pal.muted, fontSize: 10)),
-                if (pinned)
-                  Padding(
-                    padding: EdgeInsets.only(top: 2),
-                    child: Icon(Icons.push_pin_rounded, size: 11, color: Pal.accent),
+                Text(
+                  formatTime(session.updatedAt),
+                  style: TextStyle(color: Pal.muted, fontSize: 10),
+                ),
+                InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: () => state.togglePin(session.sessionId),
+                  child: Padding(
+                    padding: EdgeInsets.only(top: 2, left: 4, bottom: 2),
+                    child: Icon(
+                      pinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+                      size: 12,
+                      color: pinned ? Pal.accent : Pal.muted,
+                    ),
                   ),
+                ),
               ],
             ),
           ],
@@ -384,26 +552,50 @@ class _SessionsPaneState extends State<SessionsPane> {
     );
   }
 
-  void _showSessionMenu(BuildContext context, SessionSummary session) {
+  void _open(_ProjectGroup? group, SessionSummary session) {
+    final feed = group?.feed;
+    final target = feed?.appWorkspace;
+    if (feed != null &&
+        target != null &&
+        AppState.workspaceKeyOf(target) != widget.state.workspaceKey &&
+        widget.onOpenInProject != null) {
+      widget.onOpenInProject!(feed, session);
+    } else {
+      widget.onOpen(session);
+    }
+  }
+
+  void _showSessionMenu(
+    BuildContext context,
+    SessionSummary session, {
+    _ProjectGroup? group,
+  }) {
     final state = widget.state;
     showModalBottomSheet(
       context: context,
       backgroundColor: Pal.surface,
+      isDismissible: true,
+      enableDrag: true,
+      showDragHandle: true,
       shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
       builder: (_) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
               leading: Icon(
-                  state.isPinned(session.sessionId)
-                      ? Icons.push_pin
-                      : Icons.push_pin_outlined,
-                  size: 20),
-              title: Text(state.isPinned(session.sessionId)
-                  ? 'Снять закрепление'
-                  : 'Закрепить'),
+                state.isPinned(session.sessionId)
+                    ? Icons.push_pin
+                    : Icons.push_pin_outlined,
+                size: 20,
+              ),
+              title: Text(
+                state.isPinned(session.sessionId)
+                    ? 'Снять закрепление'
+                    : 'Закрепить',
+              ),
               onTap: () {
                 state.togglePin(session.sessionId);
                 Navigator.pop(context);
@@ -414,7 +606,7 @@ class _SessionsPaneState extends State<SessionsPane> {
               title: Text('Открыть'),
               onTap: () {
                 Navigator.pop(context);
-                widget.onOpen(session);
+                _open(group, session);
               },
             ),
           ],
@@ -432,8 +624,10 @@ class _SessionsPaneState extends State<SessionsPane> {
         Icon(Icons.forum_outlined, size: 34, color: Pal.muted),
         SizedBox(height: 10),
         Center(
-          child: Text('Пока нет задач',
-              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
+          child: Text(
+            'Пока нет задач',
+            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
+          ),
         ),
         SizedBox(height: 6),
         Center(
@@ -460,8 +654,11 @@ class _SessionsPaneState extends State<SessionsPane> {
           CircleAvatar(
             radius: 12,
             backgroundColor: Pal.surface2,
-            child: Icon(Icons.person_outline_rounded,
-                size: 14, color: Pal.muted),
+            child: Icon(
+              Icons.person_outline_rounded,
+              size: 14,
+              color: Pal.muted,
+            ),
           ),
           SizedBox(width: 8),
           Expanded(
@@ -504,14 +701,40 @@ class _SessionsPaneState extends State<SessionsPane> {
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: Color(0xFF5A2A2A)),
       ),
-      child: Row(children: [
-        Icon(Icons.link_off_rounded, size: 15, color: Color(0xFFFF9A93)),
-        SizedBox(width: 8),
-        Expanded(
-          child: Text(text,
-              style: TextStyle(color: Color(0xFFFFB4AD), fontSize: 11.5)),
-        ),
-      ]),
+      child: Row(
+        children: [
+          Icon(Icons.link_off_rounded, size: 15, color: Color(0xFFFF9A93)),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(color: Color(0xFFFFB4AD), fontSize: 11.5),
+            ),
+          ),
+        ],
+      ),
     );
   }
+}
+
+class _ProjectGroup {
+  _ProjectGroup({
+    required this.key,
+    required this.title,
+    required this.sessions,
+    required this.loading,
+    required this.active,
+    this.error,
+    this.workspace,
+    this.feed,
+  });
+
+  final String key;
+  final String title;
+  final List<SessionSummary> sessions;
+  final bool loading;
+  final bool active;
+  final String? error;
+  final Map<String, dynamic>? workspace;
+  final ProjectFeed? feed;
 }

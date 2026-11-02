@@ -52,7 +52,12 @@ class ChannelClient {
   }
 
   void _sendRequest(
-      int reqType, int id, String channel, String name, Object? arg) {
+    int reqType,
+    int id,
+    String channel,
+    String name,
+    Object? arg,
+  ) {
     final writer = ValueWriter();
     encodeValue(writer, [reqType, id, channel, name]);
     encodeValue(writer, arg);
@@ -66,10 +71,14 @@ class ChannelClient {
     Duration timeout = const Duration(seconds: 30),
   }) {
     return Future.wait([
-      ready.timeout(const Duration(seconds: 30), onTimeout: () {
-        throw TimeoutException(
-            'channel init timeout (no Initialize frame from desktop)');
-      }),
+      ready.timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          throw TimeoutException(
+            'channel init timeout (no Initialize frame from desktop)',
+          );
+        },
+      ),
     ]).then((_) {
       final id = _lastRequestId++;
       final completer = Completer<dynamic>();
@@ -81,8 +90,9 @@ class ChannelClient {
             break;
           case resPromiseError:
             _handlers.remove(id);
-            final message =
-                data is Map ? (data['message'] ?? data).toString() : '$data';
+            final message = data is Map
+                ? (data['message'] ?? data).toString()
+                : '$data';
             completer.completeError(ChannelRpcError(message, data));
             break;
           case resPromiseErrorObj:
@@ -93,10 +103,13 @@ class ChannelClient {
       };
       onLog?.call('[ipc] call $channel.$method id=$id');
       _sendRequest(reqPromise, id, channel, method, args);
-      return completer.future.timeout(timeout, onTimeout: () {
-        _handlers.remove(id);
-        throw TimeoutException('$channel.$method timed out', timeout);
-      });
+      return completer.future.timeout(
+        timeout,
+        onTimeout: () {
+          _handlers.remove(id);
+          throw TimeoutException('$channel.$method timed out', timeout);
+        },
+      );
     });
   }
 
@@ -150,6 +163,10 @@ class Channels {
   static const credential = 'credential';
   static const broadcast = 'broadcast';
   static const zcodeTask = 'zcode-task';
+  static const project = 'project';
+  static const taskGroups = 'task-groups';
+  static const modelSelection = 'model-selection';
+  static const providerSettings = 'provider-settings';
   static const zcodeAgent = 'zcode-agent';
   static const zcodeSession = 'zcode-session';
   static const fileWatcher = 'file-watcher';

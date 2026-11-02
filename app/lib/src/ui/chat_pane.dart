@@ -10,11 +10,7 @@ import 'file_browser_page.dart';
 import 'theme.dart';
 
 class ChatPane extends StatefulWidget {
-  const ChatPane({
-    super.key,
-    required this.state,
-    required this.onBack,
-  });
+  const ChatPane({super.key, required this.state, required this.onBack});
 
   final AppState state;
   final VoidCallback onBack;
@@ -69,9 +65,11 @@ class _ChatPaneState extends State<ChatPane> {
     setState(() {});
   }
 
-  Future<void> _send() async {
+  Future<void> _send({String? requestedDelivery}) async {
     final text = _input.text;
-    if ((text.trim().isEmpty && _pending.isEmpty) || widget.state.sending) return;
+    if ((text.trim().isEmpty && _pending.isEmpty) || widget.state.sending) {
+      return;
+    }
     final state = widget.state;
     // Desktop semantics: while a turn runs, a new message goes to the held
     // queue (or guide). With a non-empty queue the server may ask to choose
@@ -85,11 +83,34 @@ class _ChatPaneState extends State<ChatPane> {
       if (disposition == null) return; // cancelled
     }
     final files = List<PendingAttachment>.from(_pending);
-    _input.clear();
-    if (files.isNotEmpty) setState(() => _pending.clear());
-    await state.send(text, heldQueueDisposition: disposition, attachments: files);
-    _atBottom = true;
-    _focus.requestFocus();
+    var outcome = await state.send(
+      text,
+      heldQueueDisposition: disposition,
+      requestedDelivery: requestedDelivery,
+      attachments: files,
+    );
+    if (outcome == SendOutcome.needsQueueChoice) {
+      final choice = await _askHeldQueueDisposition();
+      if (choice != null) {
+        outcome = await state.send(
+          text,
+          heldQueueDisposition: choice,
+          requestedDelivery: requestedDelivery,
+          attachments: files,
+        );
+      }
+    }
+    if (!mounted) return;
+    if (outcome == SendOutcome.sent) {
+      _input.clear();
+      if (files.isNotEmpty) setState(() => _pending.clear());
+      _atBottom = true;
+      _focus.requestFocus();
+    } else if (outcome == SendOutcome.failed && state.error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(state.error!), duration: Duration(seconds: 5)),
+      );
+    }
   }
 
   Future<String?> _askHeldQueueDisposition() {
@@ -97,8 +118,10 @@ class _ChatPaneState extends State<ChatPane> {
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: Pal.surface,
-        title: const Text('В очереди есть сообщения',
-            style: TextStyle(fontSize: 16)),
+        title: const Text(
+          'В очереди есть сообщения',
+          style: TextStyle(fontSize: 16),
+        ),
         content: const Text(
           'Можно добавить это сообщение в конец очереди или очистить очередь '
           'и выполнить сразу.',
@@ -122,7 +145,8 @@ class _ChatPaneState extends State<ChatPane> {
   Widget build(BuildContext context) {
     final state = widget.state;
     final rows = state.conversation?.rows ?? const <Map<String, dynamic>>[];
-    final interactions = state.conversation?.pendingInteractions ??
+    final interactions =
+        state.conversation?.pendingInteractions ??
         const <Map<String, dynamic>>[];
     return Column(
       children: [
@@ -144,27 +168,31 @@ class _ChatPaneState extends State<ChatPane> {
                   child: SizedBox(
                     width: 22,
                     height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Pal.accent),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Pal.accent,
+                    ),
                   ),
                 )
               : rows.isEmpty
-                  ? _empty(context)
-                  : ListView(
-                      controller: _scroll,
-                      padding: EdgeInsets.fromLTRB(14, 14, 14, 18),
-                      children: [
-                        if (state.conversation?.canLoadOlder == true)
-                          Center(
-                            child: TextButton.icon(
-                              onPressed: state.loadOlder,
-                              icon: Icon(Icons.history_rounded, size: 16),
-                              label: Text('Загрузить раньше'),
-                            ),
-                          ),
-                        ..._buildRows(context, rows),
-                      ],
-                    ),
+              ? _empty(context)
+              : ListView(
+                  controller: _scroll,
+                  padding: EdgeInsets.fromLTRB(14, 14, 14, 18),
+                  children: [
+                    if (state.conversation?.canLoadOlder == true)
+                      Center(
+                        child: TextButton.icon(
+                          onPressed: state.loadOlder,
+                          icon: Icon(Icons.history_rounded, size: 16),
+                          label: Text('Загрузить раньше'),
+                        ),
+                      ),
+                    ..._buildRows(context, rows),
+                  ],
+                ),
         ),
+        if (state.turnRunning) _WorkingBar(),
         if (interactions.isNotEmpty) _interactions(context, interactions),
         if (state.queueItems.isNotEmpty) _queueBar(context),
         _composer(context),
@@ -198,27 +226,29 @@ class _ChatPaneState extends State<ChatPane> {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14.5),
                 ),
-                Row(children: [
-                  Container(
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(
-                      color: state.connected ? Pal.accent : Color(0xFFE3B341),
-                      shape: BoxShape.circle,
+                Row(
+                  children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: state.connected ? Pal.accent : Color(0xFFE3B341),
+                        shape: BoxShape.circle,
+                      ),
                     ),
-                  ),
-                  SizedBox(width: 6),
-                  Flexible(
-                    child: Text(
-                      conn?.isRunning == true
-                          ? 'модель работает…'
-                          : (state.connected ? 'на связи' : 'нет связи'),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: Pal.muted, fontSize: 11),
+                    SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        conn?.isRunning == true
+                            ? 'модель работает…'
+                            : (state.connected ? 'на связи' : 'нет связи'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: Pal.muted, fontSize: 11),
+                      ),
                     ),
-                  ),
-                ]),
+                  ],
+                ),
               ],
             ),
           ),
@@ -231,9 +261,14 @@ class _ChatPaneState extends State<ChatPane> {
           if (usage != null) _usageChip(usage),
           IconButton(
             tooltip: 'Файлы компьютера',
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-              builder: (_) => FileBrowserPage(state: state),
-            )),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => FileBrowserPage(
+                  state: state,
+                  initialPath: _workspacePath(state),
+                ),
+              ),
+            ),
             icon: Icon(Icons.folder_open_rounded, size: 19, color: Pal.muted),
             visualDensity: VisualDensity.compact,
           ),
@@ -245,6 +280,14 @@ class _ChatPaneState extends State<ChatPane> {
         ],
       ),
     );
+  }
+
+  /// Default folder for the PC browser: the current project root.
+  String? _workspacePath(AppState state) {
+    final workspace = state.workspace;
+    if (workspace == null) return null;
+    final path = workspace['workspacePath']?.toString();
+    return (path == null || path.isEmpty) ? null : path;
   }
 
   String _title(AppState state) {
@@ -274,8 +317,11 @@ class _ChatPaneState extends State<ChatPane> {
     return value.split('/').last;
   }
 
-  Widget _configChip(BuildContext context,
-      {required String label, required VoidCallback onTap}) {
+  Widget _configChip(
+    BuildContext context, {
+    required String label,
+    required VoidCallback onTap,
+  }) {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(8),
@@ -287,10 +333,12 @@ class _ChatPaneState extends State<ChatPane> {
           borderRadius: BorderRadius.circular(8),
           border: Border.all(color: Pal.border),
         ),
-        child: Text(label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11)),
+        child: Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(fontSize: 11),
+        ),
       ),
     );
   }
@@ -299,7 +347,8 @@ class _ChatPaneState extends State<ChatPane> {
     return Padding(
       padding: EdgeInsets.only(right: 4),
       child: Tooltip(
-        message: 'Контекст: ${humanTokens(usage.used)} из ${humanTokens(usage.size)}',
+        message:
+            'Контекст: ${humanTokens(usage.used)} из ${humanTokens(usage.size)}',
         child: SizedBox(
           width: 30,
           height: 30,
@@ -312,8 +361,10 @@ class _ChatPaneState extends State<ChatPane> {
                 backgroundColor: Pal.surface2,
                 color: usage.fraction > 0.8 ? Color(0xFFFF7B72) : Pal.accent,
               ),
-              Text('${(usage.fraction * 100).round()}',
-                  style: TextStyle(fontSize: 8.5, color: Pal.muted)),
+              Text(
+                '${(usage.fraction * 100).round()}',
+                style: TextStyle(fontSize: 8.5, color: Pal.muted),
+              ),
             ],
           ),
         ),
@@ -348,17 +399,22 @@ class _ChatPaneState extends State<ChatPane> {
     );
   }
 
-  List<Widget> _buildRows(BuildContext context, List<Map<String, dynamic>> rows) {
+  List<Widget> _buildRows(
+    BuildContext context,
+    List<Map<String, dynamic>> rows,
+  ) {
     final widgets = <Widget>[];
     final buffer = StringBuffer();
     void flushText() {
       final text = buffer.toString().trim();
       buffer.clear();
       if (text.isNotEmpty) {
-        widgets.add(Padding(
-          padding: EdgeInsets.only(bottom: 8),
-          child: MarkdownLite(text: text),
-        ));
+        widgets.add(
+          Padding(
+            padding: EdgeInsets.only(bottom: 8),
+            child: MarkdownLite(text: text),
+          ),
+        );
       }
     }
 
@@ -375,15 +431,29 @@ class _ChatPaneState extends State<ChatPane> {
           buffer.write(text);
           break;
         case 'reasoning':
+          // Quiet stream: plain reasoning text, no separate card/header.
           flushText();
-          widgets.add(_ReasoningTile(
-            text: row['text'] as String? ?? '',
-            streaming: row['state'] == 'streaming',
-          ));
+          final reasoning = row['text'] as String? ?? '';
+          if (reasoning.trim().isNotEmpty) {
+            widgets.add(
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8, left: 2, right: 8),
+                child: Text(
+                  reasoning,
+                  style: TextStyle(
+                    color: Pal.muted,
+                    fontSize: 12,
+                    height: 1.5,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ),
+            );
+          }
           break;
         case 'toolCall':
-          flushText();
-          widgets.add(_ToolTile(row: row));
+          // Bash/tool cards are intentionally hidden: the working indicator
+          // below carries the "process is alive" signal instead.
           break;
         case 'subagent':
           flushText();
@@ -393,13 +463,17 @@ class _ChatPaneState extends State<ChatPane> {
           flushText();
           final label = row['label'] ?? row['text'];
           if (label is String && label.isNotEmpty) {
-            widgets.add(Padding(
-              padding: EdgeInsets.symmetric(vertical: 10),
-              child: Center(
-                child: Text(label,
-                    style: TextStyle(color: Pal.muted, fontSize: 10.5)),
+            widgets.add(
+              Padding(
+                padding: EdgeInsets.symmetric(vertical: 10),
+                child: Center(
+                  child: Text(
+                    label,
+                    style: TextStyle(color: Pal.muted, fontSize: 10.5),
+                  ),
+                ),
               ),
-            ));
+            );
           }
           break;
         case 'turnHeader':
@@ -422,12 +496,12 @@ class _ChatPaneState extends State<ChatPane> {
               interaction: interaction,
               onResolve: ({optionId, freeText, action, content}) =>
                   widget.state.resolveInteraction(
-                interaction['interactionId'] as String? ?? '',
-                optionId: optionId,
-                freeText: freeText,
-                action: action,
-                content: content,
-              ),
+                    interaction['interactionId'] as String? ?? '',
+                    optionId: optionId,
+                    freeText: freeText,
+                    action: action,
+                    content: content,
+                  ),
             ),
         ],
       ),
@@ -454,13 +528,18 @@ class _ChatPaneState extends State<ChatPane> {
             children: [
               Icon(Icons.queue_rounded, size: 13, color: Pal.accent),
               const SizedBox(width: 6),
-              Text('Очередь ${items.length}',
-                  style: TextStyle(fontSize: 11.5, color: Pal.accent)),
+              Text(
+                'Очередь ${items.length}',
+                style: TextStyle(fontSize: 11.5, color: Pal.accent),
+              ),
               const Spacer(),
               InkWell(
                 onTap: () => state.setAutoDrain(!state.autoDrain),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 2,
+                  ),
                   child: Text(
                     state.autoDrain ? 'авто: вкл' : 'авто: выкл',
                     style: TextStyle(fontSize: 10.5, color: Pal.muted),
@@ -480,19 +559,30 @@ class _ChatPaneState extends State<ChatPane> {
                     style: TextStyle(fontSize: 11.5, color: Pal.text),
                   ),
                 ),
-                _queueAction(Icons.arrow_upward_rounded, 'Отправить сейчас',
-                    () => state.sendQueuedNow('${item['queueItemId']}')),
-                _queueAction(Icons.edit_outlined, 'Изменить',
-                    () => _editQueueItem(context, item)),
-                _queueAction(Icons.close_rounded, 'Удалить',
-                    () => state.deleteQueueItem('${item['queueItemId']}')),
+                _queueAction(
+                  Icons.arrow_upward_rounded,
+                  'Отправить сейчас',
+                  () => state.sendQueuedNow('${item['queueItemId']}'),
+                ),
+                _queueAction(
+                  Icons.edit_outlined,
+                  'Изменить',
+                  () => _editQueueItem(context, item),
+                ),
+                _queueAction(
+                  Icons.close_rounded,
+                  'Удалить',
+                  () => state.deleteQueueItem('${item['queueItemId']}'),
+                ),
               ],
             ),
           if (items.length > 3)
             Padding(
               padding: const EdgeInsets.only(top: 2, left: 2),
-              child: Text('ещё ${items.length - 3}…',
-                  style: TextStyle(fontSize: 10, color: Pal.muted)),
+              child: Text(
+                'ещё ${items.length - 3}…',
+                style: TextStyle(fontSize: 10, color: Pal.muted),
+              ),
             ),
         ],
       ),
@@ -514,14 +604,18 @@ class _ChatPaneState extends State<ChatPane> {
   }
 
   Future<void> _editQueueItem(
-      BuildContext context, Map<String, dynamic> item) async {
+    BuildContext context,
+    Map<String, dynamic> item,
+  ) async {
     final controller = TextEditingController(text: '${item['text'] ?? ''}');
     final text = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: Pal.surface,
-        title: const Text('Изменить сообщение в очереди',
-            style: TextStyle(fontSize: 15)),
+        title: const Text(
+          'Изменить сообщение в очереди',
+          style: TextStyle(fontSize: 15),
+        ),
         content: TextField(
           controller: controller,
           maxLines: 4,
@@ -533,8 +627,9 @@ class _ChatPaneState extends State<ChatPane> {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Отмена')),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Отмена'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(context, controller.text.trim()),
             child: const Text('Сохранить'),
@@ -549,11 +644,16 @@ class _ChatPaneState extends State<ChatPane> {
 
   Widget _composer(BuildContext context) {
     final state = widget.state;
-    final running = state.conversation?.canStop == true ||
+    final running =
+        state.conversation?.canStop == true ||
         state.conversation?.isRunning == true;
     return Container(
       padding: EdgeInsets.fromLTRB(
-          8, 6, 8, 8 + MediaQuery.of(context).viewPadding.bottom * 0.2),
+        8,
+        6,
+        8,
+        8 + MediaQuery.of(context).viewPadding.bottom * 0.2,
+      ),
       decoration: BoxDecoration(
         color: Pal.bg,
         border: Border(top: BorderSide(color: Pal.border)),
@@ -568,7 +668,11 @@ class _ChatPaneState extends State<ChatPane> {
               IconButton(
                 tooltip: 'Прикрепить',
                 onPressed: state.sending ? null : _pickAttachment,
-                icon: Icon(Icons.attach_file_rounded, size: 20, color: Pal.muted),
+                icon: Icon(
+                  Icons.attach_file_rounded,
+                  size: 20,
+                  color: Pal.muted,
+                ),
                 visualDensity: VisualDensity.compact,
               ),
               Expanded(
@@ -591,8 +695,19 @@ class _ChatPaneState extends State<ChatPane> {
                 _CircleAction(
                   icon: Icons.add_rounded,
                   color: Pal.surface2,
-                  tooltip: 'Поставить в очередь',
+                  tooltip: 'В очередь (не прерывая ход)',
                   onTap: _send,
+                ),
+                SizedBox(width: 6),
+                _CircleAction(
+                  icon: Icons.bolt_rounded,
+                  color: Pal.accent,
+                  tooltip: 'Сразу в текущий ход — уточнение без остановки',
+                  onTap:
+                      (_input.text.trim().isEmpty && _pending.isEmpty) ||
+                          state.sending
+                      ? null
+                      : () => _send(requestedDelivery: 'startNow'),
                 ),
                 SizedBox(width: 6),
                 _CircleAction(
@@ -606,7 +721,8 @@ class _ChatPaneState extends State<ChatPane> {
                   icon: Icons.arrow_upward_rounded,
                   color: Pal.accent,
                   tooltip: 'Отправить',
-                  onTap: (_input.text.trim().isEmpty && _pending.isEmpty) ||
+                  onTap:
+                      (_input.text.trim().isEmpty && _pending.isEmpty) ||
                           state.sending
                       ? null
                       : _send,
@@ -638,10 +754,12 @@ class _ChatPaneState extends State<ChatPane> {
               ),
               label: ConstrainedBox(
                 constraints: BoxConstraints(maxWidth: 150),
-                child: Text(_pending[i].fileName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 11)),
+                child: Text(
+                  _pending[i].fileName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11),
+                ),
               ),
               onDeleted: () => setState(() => _pending.removeAt(i)),
               deleteIcon: Icon(Icons.close_rounded, size: 14, color: Pal.muted),
@@ -656,12 +774,21 @@ class _ChatPaneState extends State<ChatPane> {
     final choice = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Pal.surface,
+      isDismissible: true,
+      enableDrag: true,
+      showDragHandle: true,
       shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
       builder: (_) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            ListTile(
+              leading: Icon(Icons.photo_camera_outlined, size: 20),
+              title: Text('Камера'),
+              onTap: () => Navigator.pop(context, 'camera'),
+            ),
             ListTile(
               leading: Icon(Icons.photo_library_outlined, size: 20),
               title: Text('Фото из галереи'),
@@ -679,35 +806,41 @@ class _ChatPaneState extends State<ChatPane> {
     if (choice == null) return;
     try {
       final picker = ImagePicker();
-      if (choice == 'photo') {
-        final picked = await picker.pickImage(source: ImageSource.gallery);
+      if (choice == 'photo' || choice == 'camera') {
+        final picked = await picker.pickImage(
+          source: choice == 'camera' ? ImageSource.camera : ImageSource.gallery,
+        );
         if (picked == null) return;
         final bytes = await picked.readAsBytes();
-        final mime = picked.mimeType ??
+        final mime =
+            picked.mimeType ??
             (picked.name.toLowerCase().endsWith('.png')
                 ? 'image/png'
                 : 'image/jpeg');
-        setState(() => _pending.add(PendingAttachment(
-              fileName: picked.name,
-              mime: mime,
-              bytes: bytes,
-            )));
+        setState(
+          () => _pending.add(
+            PendingAttachment(fileName: picked.name, mime: mime, bytes: bytes),
+          ),
+        );
       } else {
         final pickedFiles = await FilePicker.pickFiles();
         final file = pickedFiles.firstOrNull;
         if (file == null) return;
         final bytes = await file.readAsBytes();
-        setState(() => _pending.add(PendingAttachment(
+        setState(
+          () => _pending.add(
+            PendingAttachment(
               fileName: file.name,
               mime: _mimeFor(file.name),
               bytes: bytes,
-            )));
+            ),
+          ),
+        );
       }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось выбрать файл: $e')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Не удалось выбрать файл: $e')));
     }
   }
 
@@ -736,32 +869,44 @@ class _ChatPaneState extends State<ChatPane> {
       context: context,
       backgroundColor: Pal.surface,
       isScrollControlled: true,
+      isDismissible: true,
+      enableDrag: true,
+      showDragHandle: true,
       shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (_) => AnimatedBuilder(
         animation: state,
-        builder: (context, _) => SafeArea(
+        builder: (sheetContext, _) => SafeArea(
           child: ListView(
             shrinkWrap: true,
             padding: EdgeInsets.fromLTRB(20, 14, 20, 20),
             children: [
-              Row(children: [
-                Text('Настройки задачи',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                Spacer(),
-                IconButton(
-                  tooltip: 'Обновить список моделей',
-                  onPressed: () => state.loadModelCatalog(refresh: true),
-                  icon: Icon(Icons.refresh_rounded, size: 18, color: Pal.muted),
-                ),
-              ]),
+              Row(
+                children: [
+                  Text(
+                    'Настройки задачи',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                  ),
+                  Spacer(),
+                  IconButton(
+                    tooltip: 'Обновить список моделей',
+                    onPressed: () => state.loadModelCatalog(refresh: true),
+                    icon: Icon(
+                      Icons.refresh_rounded,
+                      size: 18,
+                      color: Pal.muted,
+                    ),
+                  ),
+                ],
+              ),
               SizedBox(height: 4),
               _modelSection(context),
               SizedBox(height: 6),
               if (conn != null)
                 _choiceSection(
-                  title: 'Режим',
-                  current: conn.currentMode,
+                  title: 'Режим задачи',
+                  current: state.currentModeValue,
                   options: const [
                     ('build', 'Build'),
                     ('edit', 'Edit'),
@@ -773,15 +918,115 @@ class _ChatPaneState extends State<ChatPane> {
               if (conn != null && conn.thoughtLevels.isNotEmpty)
                 _choiceSection(
                   title: 'Уровень размышлений',
-                  current: conn.currentThought,
+                  current: state.currentThoughtValue,
                   options: conn.thoughtLevels.map((t) => (t, t)).toList(),
                   onPick: (value) async {
-                    final provider = '${conn.config?['provider'] ?? ''}';
-                    final model = '${conn.config?['model'] ?? ''}';
-                    if (model.isEmpty) return;
-                    await state.setModelParts(provider, model, thought: value);
+                    final current = state.currentModelValue;
+                    if (current == null || !current.contains('/')) return;
+                    final idx = current.lastIndexOf('/');
+                    await state.setModelParts(
+                      current.substring(0, idx),
+                      current.substring(idx + 1),
+                      thought: value,
+                    );
                   },
                 ),
+              const SizedBox(height: 2),
+              Text(
+                'Модель и режим применятся к следующему сообщению — как в '
+                'композере десктопа. Текущий ход не прерывается.',
+                style: TextStyle(color: Pal.muted, fontSize: 11, height: 1.4),
+              ),
+              const SizedBox(height: 6),
+              if (conn != null) ...[
+                Divider(height: 20),
+                Text(
+                  'Задача',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    Icons.drive_file_rename_outline_rounded,
+                    size: 19,
+                    color: Pal.muted,
+                  ),
+                  title: Text('Переименовать', style: TextStyle(fontSize: 13)),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    _renameTask();
+                  },
+                ),
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    Icons.drive_file_move_outline,
+                    size: 19,
+                    color: Pal.muted,
+                  ),
+                  title: Text(
+                    'Перенести в проект…',
+                    style: TextStyle(fontSize: 13),
+                  ),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    _moveTaskToProject();
+                  },
+                ),
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    Icons.push_pin_outlined,
+                    size: 19,
+                    color: Pal.muted,
+                  ),
+                  title: Text(
+                    state.isPinned(state.sessionId ?? '')
+                        ? 'Снять закрепление'
+                        : 'Закрепить',
+                    style: TextStyle(fontSize: 13),
+                  ),
+                  onTap: () {
+                    final id = state.sessionId;
+                    if (id != null) state.togglePin(id);
+                    Navigator.of(sheetContext).pop();
+                  },
+                ),
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    Icons.archive_outlined,
+                    size: 19,
+                    color: Pal.muted,
+                  ),
+                  title: Text('В архив', style: TextStyle(fontSize: 13)),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    _archiveTask();
+                  },
+                ),
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    Icons.delete_outline_rounded,
+                    size: 19,
+                    color: Color(0xFFFF7B72),
+                  ),
+                  title: Text(
+                    'Удалить задачу',
+                    style: TextStyle(fontSize: 13, color: Color(0xFFFF7B72)),
+                  ),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    _deleteTask();
+                  },
+                ),
+              ],
               if (conn != null && conn.canStop) ...[
                 SizedBox(height: 4),
                 OutlinedButton.icon(
@@ -798,6 +1043,243 @@ class _ChatPaneState extends State<ChatPane> {
         ),
       ),
     );
+  }
+
+  void _snack(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(text), duration: const Duration(seconds: 4)),
+    );
+  }
+
+  Future<void> _renameTask() async {
+    final state = widget.state;
+    if (state.sessionId == null) return;
+    final controller = TextEditingController(
+      text: state.sessionTitle ?? _title(state),
+    );
+    final title = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Pal.surface,
+        title: Text('Переименовать задачу', style: TextStyle(fontSize: 16)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: TextStyle(fontSize: 13.5),
+          decoration: InputDecoration(labelText: 'Название', isDense: true),
+          onSubmitted: (value) => Navigator.pop(dialogContext, value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, controller.text),
+            child: Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (title == null || title.trim().isEmpty) return;
+    try {
+      await state.renameCurrentSession(title);
+      _snack('Переименовано');
+    } catch (e) {
+      _snack('Не удалось переименовать: ${state.error ?? e}');
+    }
+  }
+
+  Future<void> _moveTaskToProject() async {
+    final state = widget.state;
+    if (state.sessionId == null) return;
+    final future = state.desktopProjects();
+    final workspace = state.workspace;
+    final currentRoot = workspace == null
+        ? null
+        : workspace['workspacePath']?.toString();
+    final picked = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Pal.surface,
+        title: Text('Перенести в проект', style: TextStyle(fontSize: 16)),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: FutureBuilder<List<Map<String, dynamic>>>(
+            future: future,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Pal.accent,
+                      ),
+                    ),
+                  ),
+                );
+              }
+              if (snapshot.hasError) {
+                return Text(
+                  'Не удалось получить проекты: ${snapshot.error}',
+                  style: TextStyle(fontSize: 12, color: Color(0xFFFF9A93)),
+                );
+              }
+              final projects = snapshot.data ?? const [];
+              if (projects.isEmpty) {
+                return Text(
+                  'На компьютере нет проектов',
+                  style: TextStyle(fontSize: 12, color: Pal.muted),
+                );
+              }
+              return ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final p in projects)
+                    Builder(
+                      builder: (context) {
+                        final roots = p['roots'];
+                        final root = roots is List && roots.isNotEmpty
+                            ? (roots.first is Map
+                                  ? '${(roots.first as Map)['rootPath'] ?? ''}'
+                                  : '${roots.first}')
+                            : '';
+                        final isCurrent =
+                            currentRoot != null && root == currentRoot;
+                        return ListTile(
+                          dense: true,
+                          enabled: !isCurrent,
+                          leading: Icon(
+                            isCurrent
+                                ? Icons.folder_open_rounded
+                                : Icons.folder_outlined,
+                            size: 19,
+                            color: isCurrent ? Pal.accent : Pal.muted,
+                          ),
+                          title: Text(
+                            '${p['name'] ?? 'Проект'}',
+                            style: TextStyle(fontSize: 13),
+                          ),
+                          subtitle: root.isEmpty
+                              ? null
+                              : Text(
+                                  root,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 10.5,
+                                    color: Pal.muted,
+                                  ),
+                                ),
+                          trailing: isCurrent
+                              ? Text(
+                                  'текущий',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: Pal.muted,
+                                  ),
+                                )
+                              : null,
+                          onTap: () => Navigator.pop(dialogContext, p),
+                        );
+                      },
+                    ),
+                ],
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text('Отмена'),
+          ),
+        ],
+      ),
+    );
+    if (picked == null) return;
+    final projectId = picked['id']?.toString() ?? '';
+    if (projectId.isEmpty) return;
+    try {
+      await state.moveCurrentSessionToProject(projectId);
+      _snack('Перенесено в «${picked['name'] ?? 'проект'}»');
+    } catch (e) {
+      _snack('Не удалось перенести: ${state.error ?? e}');
+    }
+  }
+
+  Future<void> _archiveTask() async {
+    final state = widget.state;
+    if (state.sessionId == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Pal.surface,
+        title: Text('В архив?', style: TextStyle(fontSize: 16)),
+        content: Text(
+          'Задача скроется из списка, но останется на компьютере.',
+          style: TextStyle(fontSize: 12.5, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text('В архив'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await state.archiveCurrentSession();
+      _snack('Задача в архиве');
+    } catch (e) {
+      _snack('Не удалось архивировать: ${state.error ?? e}');
+    }
+  }
+
+  Future<void> _deleteTask() async {
+    final state = widget.state;
+    if (state.sessionId == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Pal.surface,
+        title: Text('Удалить задачу?', style: TextStyle(fontSize: 16)),
+        content: Text(
+          'Задача и её история будут удалены с компьютера. Это действие '
+          'нельзя отменить.',
+          style: TextStyle(fontSize: 12.5, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Color(0xFFC0392B)),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await state.deleteCurrentSession();
+      _snack('Задача удалена');
+    } catch (e) {
+      _snack('Не удалось удалить: ${state.error ?? e}');
+    }
   }
 
   Widget _modelSection(BuildContext context) {
@@ -824,21 +1306,46 @@ class _ChatPaneState extends State<ChatPane> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Модель',
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            Text(
+              'Модель',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
             SizedBox(height: 6),
             Text(
-              current == null ? 'не выбрана' : current.replaceFirst(RegExp(r'^/'), ''),
+              current == null
+                  ? 'не выбрана'
+                  : current.replaceFirst(RegExp(r'^/'), ''),
               style: TextStyle(fontSize: 12, color: Pal.muted),
             ),
             if (state.modelCatalogError != null) ...[
               SizedBox(height: 6),
-              Text(state.modelCatalogError!,
-                  style: TextStyle(fontSize: 11.5, color: Color(0xFFFF9A93))),
-              SizedBox(height: 4),
-              TextButton(
-                onPressed: () => state.loadModelCatalog(refresh: true),
-                child: Text('Повторить'),
+              Text(
+                state.modelCatalogError!,
+                style: TextStyle(fontSize: 11.5, color: Color(0xFFFF9A93)),
+              ),
+              SizedBox(height: 8),
+              FilledButton.icon(
+                onPressed: state.modelCatalogLoading
+                    ? null
+                    : () => state.loadModelCatalog(refresh: true),
+                icon: state.modelCatalogLoading
+                    ? SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(Icons.settings_suggest_rounded, size: 18),
+                label: Text('Настроить ПК для смены моделей'),
+              ),
+              SizedBox(height: 2),
+              Text(
+                'Модели берутся с подключённого компьютера — отдельная '
+                'настройка не нужна.',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  color: Pal.muted,
+                  height: 1.35,
+                ),
               ),
             ],
           ],
@@ -854,15 +1361,22 @@ class _ChatPaneState extends State<ChatPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Модель',
-            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+        Text(
+          'Модель',
+          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+        ),
         SizedBox(height: 4),
         for (final entry in groups.entries) ...[
           Padding(
             padding: EdgeInsets.only(top: 8, bottom: 2),
-            child: Text(entry.key,
-                style: TextStyle(
-                    fontSize: 11, color: Pal.muted, fontWeight: FontWeight.w600)),
+            child: Text(
+              entry.key,
+              style: TextStyle(
+                fontSize: 11,
+                color: Pal.muted,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
           for (final m in entry.value)
             _ModelTile(
@@ -889,8 +1403,10 @@ class _ChatPaneState extends State<ChatPane> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title,
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          Text(
+            title,
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          ),
           SizedBox(height: 8),
           Wrap(
             spacing: 6,
@@ -948,16 +1464,20 @@ class _ModelTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(model.label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 13)),
+                  Text(
+                    model.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 13),
+                  ),
                   if (model.description != null &&
                       model.description!.trim().isNotEmpty)
-                    Text(model.description!,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: Pal.muted, fontSize: 10.5)),
+                    Text(
+                      model.description!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: Pal.muted, fontSize: 10.5),
+                    ),
                 ],
               ),
             ),
@@ -998,7 +1518,11 @@ class _CircleAction extends StatelessWidget {
             color: enabled ? color : Pal.surface2,
             shape: BoxShape.circle,
           ),
-          child: Icon(icon, size: 21, color: enabled ? Color(0xFF06231A) : Pal.muted),
+          child: Icon(
+            icon,
+            size: 21,
+            color: enabled ? Color(0xFF06231A) : Pal.muted,
+          ),
         ),
       ),
     );
@@ -1015,7 +1539,9 @@ class _UserBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final text = row['text'] as String? ?? '';
     final attachments = row['attachments'];
-    final files = attachments is List ? attachments.whereType<Map>().toList() : const [];
+    final files = attachments is List
+        ? attachments.whereType<Map>().toList()
+        : const [];
     return Padding(
       padding: EdgeInsets.only(bottom: 8, left: 40),
       child: Align(
@@ -1048,8 +1574,10 @@ class _UserBubble extends StatelessWidget {
                   ],
                 ),
               if (text.isNotEmpty)
-                SelectableText(text,
-                    style: TextStyle(fontSize: 13.5, height: 1.4)),
+                SelectableText(
+                  text,
+                  style: TextStyle(fontSize: 13.5, height: 1.4),
+                ),
             ],
           ),
         ),
@@ -1072,7 +1600,8 @@ class _AttachmentViewState extends State<_AttachmentView> {
   Uint8List? _bytes;
   bool _failed = false;
 
-  String get _mime => '${widget.data['mime'] ?? widget.data['mediaType'] ?? ''}';
+  String get _mime =>
+      '${widget.data['mime'] ?? widget.data['mediaType'] ?? ''}';
   String get _name =>
       '${widget.data['fileName'] ?? widget.data['name'] ?? 'файл'}';
   bool get _isImage => _mime.startsWith('image/');
@@ -1103,11 +1632,7 @@ class _AttachmentViewState extends State<_AttachmentView> {
       if (_bytes != null) {
         return ClipRRect(
           borderRadius: BorderRadius.circular(8),
-          child: Image.memory(
-            _bytes!,
-            width: 180,
-            fit: BoxFit.cover,
-          ),
+          child: Image.memory(_bytes!, width: 180, fit: BoxFit.cover),
         );
       }
       return Container(
@@ -1124,7 +1649,10 @@ class _AttachmentViewState extends State<_AttachmentView> {
             : SizedBox(
                 width: 14,
                 height: 14,
-                child: CircularProgressIndicator(strokeWidth: 1.6, color: Pal.muted),
+                child: CircularProgressIndicator(
+                  strokeWidth: 1.6,
+                  color: Pal.muted,
+                ),
               ),
       );
     }
@@ -1142,10 +1670,12 @@ class _AttachmentViewState extends State<_AttachmentView> {
           SizedBox(width: 5),
           ConstrainedBox(
             constraints: BoxConstraints(maxWidth: 150),
-            child: Text(_name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 11)),
+            child: Text(
+              _name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11),
+            ),
           ),
         ],
       ),
@@ -1153,167 +1683,53 @@ class _AttachmentViewState extends State<_AttachmentView> {
   }
 }
 
-class _ReasoningTile extends StatefulWidget {
-  const _ReasoningTile({required this.text, required this.streaming});
-  final String text;
-  final bool streaming;
+class _WorkingBar extends StatefulWidget {
+  const _WorkingBar();
 
   @override
-  State<_ReasoningTile> createState() => _ReasoningTileState();
+  State<_WorkingBar> createState() => _WorkingBarState();
 }
 
-class _ReasoningTileState extends State<_ReasoningTile> {
-  bool _open = false;
+class _WorkingBarState extends State<_WorkingBar>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: 8),
-      child: InkWell(
-        onTap: () => setState(() => _open = !_open),
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          width: double.infinity,
-          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-          decoration: BoxDecoration(
-            color: Pal.surface.withValues(alpha: 0.6),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: Pal.border),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (context, _) {
+        final dots = List.filled(1 + (_c.value * 3).floor() % 3, ".").join();
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(14, 2, 14, 6),
+          child: Row(
             children: [
-              Row(children: [
-                Icon(Icons.psychology_outlined, size: 14, color: Pal.muted),
-                SizedBox(width: 7),
-                Text(widget.streaming ? 'Думает…' : 'Размышления',
-                    style: TextStyle(color: Pal.muted, fontSize: 11.5)),
-                Spacer(),
-                Icon(_open ? Icons.expand_less : Icons.expand_more,
-                    size: 16, color: Pal.muted),
-              ]),
-              if (_open) ...[
-                SizedBox(height: 6),
-                Text(widget.text,
-                    style: TextStyle(color: Pal.muted, fontSize: 12, height: 1.5)),
-              ],
+              SizedBox(
+                width: 13,
+                height: 13,
+                child: CircularProgressIndicator(
+                  strokeWidth: 1.7,
+                  color: Pal.accent,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                "Агент работает$dots",
+                style: TextStyle(color: Pal.muted, fontSize: 11.5),
+              ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ToolTile extends StatefulWidget {
-  const _ToolTile({required this.row});
-  final Map<String, dynamic> row;
-
-  @override
-  State<_ToolTile> createState() => _ToolTileState();
-}
-
-class _ToolTileState extends State<_ToolTile> {
-  bool _open = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final row = widget.row;
-    final name = '${row['toolName'] ?? row['name'] ?? 'tool'}';
-    final status = '${row['status'] ?? ''}';
-    final input = row['inputText'] as String? ?? '';
-    final output = row['output'];
-    final outputText = output is Map ? '${output['text'] ?? ''}' : '';
-    final error = row['error'];
-    final color = toolStatusColor(status);
-    return Container(
-      margin: EdgeInsets.only(bottom: 8),
-      decoration: BoxDecoration(
-        color: Pal.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Pal.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          InkWell(
-            borderRadius: BorderRadius.circular(12),
-            onTap: () => setState(() => _open = !_open),
-            child: Padding(
-              padding: EdgeInsets.fromLTRB(10, 8, 8, 8),
-              child: Row(
-                children: [
-                  Icon(iconForTool(name), size: 16, color: color),
-                  SizedBox(width: 9),
-                  Expanded(
-                    child: Text(name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: 12.5, fontFamily: 'monospace')),
-                  ),
-                  if (status.isNotEmpty)
-                    Text(_statusLabel(status),
-                        style: TextStyle(fontSize: 10, color: color)),
-                  SizedBox(width: 6),
-                  Icon(_open ? Icons.expand_less : Icons.expand_more,
-                      size: 17, color: Pal.muted),
-                ],
-              ),
-            ),
-          ),
-          if (_open)
-            Padding(
-              padding: EdgeInsets.fromLTRB(12, 0, 12, 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (input.isNotEmpty) _kv('Вход', input),
-                  if (outputText.isNotEmpty) _kv('Выход', outputText),
-                  if (error is Map)
-                    _kv('Ошибка', '${error['code'] ?? ''} ${error['message'] ?? ''}'),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  String _statusLabel(String status) => switch (status) {
-        'running' || 'inputStreaming' => 'выполняется',
-        'pendingApproval' => 'ждёт подтверждения',
-        'success' => 'готово',
-        'error' => 'ошибка',
-        'cancelled' => 'отменено',
-        _ => status,
-      };
-
-  Widget _kv(String label, String value) {
-    return Padding(
-      padding: EdgeInsets.only(top: 6),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label, style: TextStyle(color: Pal.muted, fontSize: 10.5)),
-          SizedBox(height: 4),
-          Container(
-            width: double.infinity,
-            padding: EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: Pal.bg,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Pal.border),
-            ),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(maxHeight: 260),
-              child: SingleChildScrollView(
-                child: SelectableText(value, style: monoStyle),
-              ),
-            ),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 }
@@ -1337,23 +1753,31 @@ class _SubagentTile extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(children: [
-            Icon(Icons.hub_outlined, size: 15, color: Color(0xFF7AA7FF)),
-            SizedBox(width: 8),
-            Expanded(
-              child: Text('$title',
-                  style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
-            ),
-            Text('${row['status'] ?? ''}',
-                style: TextStyle(fontSize: 10, color: Pal.muted)),
-          ]),
+          Row(
+            children: [
+              Icon(Icons.hub_outlined, size: 15, color: Color(0xFF7AA7FF)),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '$title',
+                  style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                ),
+              ),
+              Text(
+                '${row['status'] ?? ''}',
+                style: TextStyle(fontSize: 10, color: Pal.muted),
+              ),
+            ],
+          ),
           if (summary.isNotEmpty)
             Padding(
               padding: EdgeInsets.only(top: 6),
-              child: Text(summary,
-                  maxLines: 4,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: Pal.muted, fontSize: 11.5, height: 1.4)),
+              child: Text(
+                summary,
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: Pal.muted, fontSize: 11.5, height: 1.4),
+              ),
             ),
         ],
       ),
@@ -1369,7 +1793,8 @@ class _InteractionCard extends StatefulWidget {
     String? freeText,
     String? action,
     Map<String, dynamic>? content,
-  }) onResolve;
+  })
+  onResolve;
 
   @override
   State<_InteractionCard> createState() => _InteractionCardState();
@@ -1429,19 +1854,25 @@ class _InteractionCardState extends State<_InteractionCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(children: [
-            Icon(Icons.shield_outlined, size: 17, color: Color(0xFFE3B341)),
-            SizedBox(width: 8),
-            Expanded(
-              child: Text(title,
-                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13.5)),
-            ),
-          ]),
+          Row(
+            children: [
+              Icon(Icons.shield_outlined, size: 17, color: Color(0xFFE3B341)),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  title,
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13.5),
+                ),
+              ),
+            ],
+          ),
           if (detail is String && detail.isNotEmpty)
             Padding(
               padding: EdgeInsets.only(top: 8),
-              child: Text(detail,
-                  style: TextStyle(color: Pal.muted, fontSize: 12, height: 1.4)),
+              child: Text(
+                detail,
+                style: TextStyle(color: Pal.muted, fontSize: 12, height: 1.4),
+              ),
             ),
           if (options is List && options.isNotEmpty)
             Padding(
@@ -1529,12 +1960,12 @@ class _OptionButton extends StatelessWidget {
   }
 
   String _defaultLabel(String kind) => switch (kind) {
-        'allowOnce' => 'Разрешить',
-        'allowAlways' => 'Разрешать всегда',
-        'deny' => 'Отклонить',
-        'custom' => 'Свой ответ',
-        _ => 'Выбрать',
-      };
+    'allowOnce' => 'Разрешить',
+    'allowAlways' => 'Разрешать всегда',
+    'deny' => 'Отклонить',
+    'custom' => 'Свой ответ',
+    _ => 'Выбрать',
+  };
 }
 
 /// Markdown-lite: fenced code, inline code, bold.
@@ -1605,15 +2036,19 @@ class MarkdownLite extends StatelessWidget {
       }
       final token = match.group(0)!;
       if (token.startsWith('**')) {
-        spans.add(TextSpan(
-          text: token.substring(2, token.length - 2),
-          style: TextStyle(fontWeight: FontWeight.w700),
-        ));
+        spans.add(
+          TextSpan(
+            text: token.substring(2, token.length - 2),
+            style: TextStyle(fontWeight: FontWeight.w700),
+          ),
+        );
       } else {
-        spans.add(TextSpan(
-          text: token.substring(1, token.length - 1),
-          style: monoStyle.copyWith(fontSize: 12.8, color: Color(0xFF9FE8C3)),
-        ));
+        spans.add(
+          TextSpan(
+            text: token.substring(1, token.length - 1),
+            style: monoStyle.copyWith(fontSize: 12.8, color: Color(0xFF9FE8C3)),
+          ),
+        );
       }
       index = match.end;
     }
@@ -1652,25 +2087,30 @@ class _CodeBlock extends StatelessWidget {
             decoration: BoxDecoration(
               border: Border(bottom: BorderSide(color: Pal.border)),
             ),
-            child: Row(children: [
-              Text((lang?.isEmpty ?? true) ? 'code' : lang!,
-                  style: TextStyle(color: Pal.muted, fontSize: 10.5)),
-              Spacer(),
-              InkWell(
-                onTap: () {
-                  Clipboard.setData(ClipboardData(text: code));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                        content: Text('Скопировано'),
-                        duration: Duration(seconds: 1)),
-                  );
-                },
-                child: Padding(
-                  padding: EdgeInsets.all(4),
-                  child: Icon(Icons.copy_rounded, size: 14, color: Pal.muted),
+            child: Row(
+              children: [
+                Text(
+                  (lang?.isEmpty ?? true) ? 'code' : lang!,
+                  style: TextStyle(color: Pal.muted, fontSize: 10.5),
                 ),
-              ),
-            ]),
+                Spacer(),
+                InkWell(
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: code));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Скопировано'),
+                        duration: Duration(seconds: 1),
+                      ),
+                    );
+                  },
+                  child: Padding(
+                    padding: EdgeInsets.all(4),
+                    child: Icon(Icons.copy_rounded, size: 14, color: Pal.muted),
+                  ),
+                ),
+              ],
+            ),
           ),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,

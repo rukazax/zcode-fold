@@ -24,7 +24,12 @@ import QRCode from 'qrcode';
 const args = process.argv.slice(2);
 const serveMode = args.includes('--serve');
 const rootArg = args.includes('--root') ? args[args.indexOf('--root') + 1] : null;
-const ROOT = path.resolve(rootArg ?? process.cwd());
+// File mode defaults to the whole system drive: the phone opens the project
+// folder by default but can still browse the rest of the PC. Pass --root to
+// narrow it (e.g. --root C:/Users/me/project).
+const ROOT = path.resolve(
+  rootArg ?? (serveMode ? path.parse(process.cwd()).root : process.cwd()),
+);
 const PORT = 8939;
 
 function dec(raw) {
@@ -73,6 +78,61 @@ function startFileServer(token) {
     if (url.pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, root: ROOT, name: os.hostname() }));
+      return;
+    }
+    if (url.pathname === '/models') {
+      // The desktop provider registry (ZCode has no remote API for it).
+      try {
+        const cfgPath = path.join(os.homedir(), '.zcode', 'v2', 'provider_config.json');
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        const rules = cfg?.config ?? {};
+        const providers = (rules.providerConfigRules?.providerRules ?? []).map((p) => ({
+          providerId: p.providerId,
+          providerName: p.providerName ?? p.providerId,
+          modelOrder: p.config?.modelOrder ?? [],
+          personalModelIds: p.config?.personalModelIds ?? [],
+        }));
+        const nameById = new Map(providers.map((p) => [p.providerId, p.providerName]));
+        // A model is offered unless a rule explicitly disables it.
+        const enabledById = new Map(
+          (rules.modelConfigRules?.providerModelRules ?? []).map((m) => [
+            `${m.providerId}/${m.modelId}`,
+            m?.config?.enabled !== false,
+          ]),
+        );
+        const models = [];
+        const seen = new Set();
+        for (const p of providers) {
+          const ids = [...p.personalModelIds, ...p.modelOrder];
+          for (const modelId of ids) {
+            const key = `${p.providerId}/${modelId}`;
+            if (!modelId || seen.has(key) || enabledById.get(key) === false) continue;
+            seen.add(key);
+            models.push({
+              providerId: p.providerId,
+              providerName: nameById.get(p.providerId) ?? p.providerId,
+              modelId,
+              enabled: true,
+            });
+          }
+        }
+        for (const m of rules.modelConfigRules?.manualProviderModelRules ?? []) {
+          if (!m?.modelId) continue;
+          const key = `${m.providerId}/${m.modelId}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          models.push({
+            providerId: m.providerId,
+            providerName: nameById.get(m.providerId) ?? m.providerId,
+            modelId: m.modelId,
+            enabled: true,
+          });
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ providers, models }));
+      } catch (e) {
+        res.writeHead(500).end(`models failed: ${e.message}`);
+      }
       return;
     }
     if (url.pathname === '/fs/list') {

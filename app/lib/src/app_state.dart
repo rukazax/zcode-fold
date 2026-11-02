@@ -13,6 +13,30 @@ import 'zcode/connection_params.dart';
 import 'zcode/relay_client.dart';
 import 'zcode/zcode_client.dart';
 
+/// One project from `project.readTree` and its task list.
+class ProjectFeed {
+  ProjectFeed(this.project, {this.appWorkspace});
+  final Map<String, dynamic> project;
+
+  /// Matching bootstrap workspace, when the project can be opened remotely.
+  final Map<String, dynamic>? appWorkspace;
+
+  String get key => AppState.workspaceKeyOf(project) ?? '';
+  String get title {
+    final name = '${project['name'] ?? ''}'.trim();
+    return name.isNotEmpty ? name : AppState.workspaceTitle(project);
+  }
+
+  List<SessionSummary> sessions = const [];
+  bool loading = true;
+  String? error;
+}
+
+/// Result of [AppState.send]. `needsQueueChoice` mirrors the desktop's
+/// `guard.heldQueueConfirmationStale` handshake: the user must pick between
+/// appending to the held queue and clearing it before the text is delivered.
+enum SendOutcome { sent, needsQueueChoice, failed }
+
 /// Direct client for the stock ZCode "Mobile remote control".
 ///
 /// Flow: QR/link (`https://zcode.z.ai/remote/v4?sid=…&hash=…`) → relay WS →
@@ -74,6 +98,12 @@ class AppState extends ChangeNotifier {
   Map<String, dynamic>? workspace;
   WorkspacePrep? prep;
 
+  /// Task lists of the other projects (the active one uses [_sessionsSub]).
+  /// Sourced from `project.readTree` over the active bridge.
+  final List<ProjectFeed> projectFeeds = [];
+  bool projectFeedsLoading = false;
+  Future<void>? _feedRefresh;
+
   /// LLM catalog for the chat picker (desktop provider registry).
   List<ModelOption> modelCatalog = const [];
   bool modelCatalogLoading = false;
@@ -82,6 +112,13 @@ class AppState extends ChangeNotifier {
   /// Model chosen before the first message of a new chat.
   String? draftModelValue;
   String? draftThought;
+
+  /// Composer config for the NEXT message (desktop semantics): the desktop
+  /// picker does not send a "switch model" command — it keeps the choice in
+  /// the draft and ships it with the next `sendText` / `createSession`.
+  String? pendingModelValue;
+  String? pendingThought;
+  String? pendingMode;
 
   /// Pinned session ids (local, per desktop).
   final Set<String> pinnedSessions = {};
@@ -188,8 +225,8 @@ class AppState extends ChangeNotifier {
     final label = name.trim().isNotEmpty
         ? name.trim()
         : (parsed.deviceName?.trim().isNotEmpty == true
-            ? parsed.deviceName!.trim()
-            : 'ZCode');
+              ? parsed.deviceName!.trim()
+              : 'ZCode');
     final device = SavedDevice(id: id, name: label, url: url.trim());
     devices.add(device);
     await _saveDevices();
@@ -270,7 +307,9 @@ class AppState extends ChangeNotifier {
   String? bridgeFsUrl;
 
   Future<void> setBridgeFiles(String url, String token) async {
-    bridgeFsUrl = url.trim().isEmpty ? null : url.trim().replaceAll(RegExp(r'/+$'), '');
+    bridgeFsUrl = url.trim().isEmpty
+        ? null
+        : url.trim().replaceAll(RegExp(r'/+$'), '');
     if (token.trim().isNotEmpty) {
       await _secure.write(key: _kBridgeToken, value: token.trim());
     }
@@ -282,27 +321,72 @@ class AppState extends ChangeNotifier {
 
   Future<String?> get _bridgeToken => _secure.read(key: _kBridgeToken);
 
-  bool get hasPcFiles =>
-      bridgeFsUrl != null && bridgeFsUrl!.isNotEmpty;
+  Future<String?> readBridgeToken() => _bridgeToken;
+
+  bool get hasPcFiles => bridgeFsUrl != null && bridgeFsUrl!.isNotEmpty;
+
+  /// Zero-input setup for the common cases: reuse the saved bridge URL, then
+  /// try the loopback address (adb reverse) and the emulator host. Returns
+  /// true when a working bridge was found and saved.
+  Future<bool> autoConfigurePc() async {
+    final token = await _bridgeToken;
+    if (token == null || token.isEmpty) return false;
+    final candidates = <String>{
+      if (bridgeFsUrl != null && bridgeFsUrl!.isNotEmpty) bridgeFsUrl!,
+      'http://127.0.0.1:8939',
+      'http://10.0.2.2:8939',
+    };
+    for (final url in candidates) {
+      try {
+        final health = await pcHealthFor(url, token);
+        if (health['ok'] == true) {
+          await setBridgeFiles(url, token);
+          return true;
+        }
+      } catch (_) {}
+    }
+    return false;
+  }
 
   Future<Map<String, dynamic>> pcHealth() async {
     final url = bridgeFsUrl;
-    final token = await _bridgeToken;
-    if (url == null || token == null) throw Exception('Мост файлов не настроен');
+    if (url == null) throw Exception('Мост файлов не настроен');
+    return pcHealthFor(url, '');
+  }
+
+  /// Checks a candidate bridge URL/token without saving it. Empty token means
+  /// "use the one already stored" (the dialog never echoes secrets back).
+  Future<Map<String, dynamic>> pcHealthFor(
+    String rawUrl,
+    String rawToken,
+  ) async {
+    final base = rawUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    final token = rawToken.trim().isNotEmpty
+        ? rawToken.trim()
+        : await _bridgeToken;
+    if (base.isEmpty) throw Exception('Укажи адрес моста');
+    if (token == null || token.isEmpty) throw Exception('Укажи токен моста');
     final res = await http
-        .get(Uri.parse('$url/health'), headers: {'Authorization': 'Bearer $token'})
+        .get(
+          Uri.parse('$base/health'),
+          headers: {'Authorization': 'Bearer $token'},
+        )
         .timeout(const Duration(seconds: 8));
-    if (res.statusCode != 200) throw Exception('мост ответил ${res.statusCode}');
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    if (res.statusCode != 200) {
+      throw Exception('мост ответил ${res.statusCode}');
+    }
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
   }
 
   Future<List<PcFileEntry>> pcList(String? path) async {
     final url = bridgeFsUrl;
     final token = await _bridgeToken;
-    if (url == null || token == null) throw Exception('Мост файлов не настроен');
-    final uri = Uri.parse('$url/fs/list').replace(
-      queryParameters: path == null ? null : {'path': path},
-    );
+    if (url == null || token == null) {
+      throw Exception('Мост файлов не настроен');
+    }
+    final uri = Uri.parse('$url/fs/list')
+        .replace(queryParameters: path == null ? null : {'path': path});
     final res = await http
         .get(uri, headers: {'Authorization': 'Bearer $token'})
         .timeout(const Duration(seconds: 12));
@@ -312,10 +396,12 @@ class AppState extends ChangeNotifier {
     final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     final entries = (data['entries'] as List? ?? const [])
         .whereType<Map>()
-        .map((m) => PcFileEntry.fromJson(
-              m.cast<String, dynamic>(),
-              (data['path'] ?? '') as String,
-            ))
+        .map(
+          (m) => PcFileEntry.fromJson(
+            m.cast<String, dynamic>(),
+            (data['path'] ?? '') as String,
+          ),
+        )
         .toList();
     return entries;
   }
@@ -323,8 +409,11 @@ class AppState extends ChangeNotifier {
   Future<Uint8List> pcRead(String path) async {
     final url = bridgeFsUrl;
     final token = await _bridgeToken;
-    if (url == null || token == null) throw Exception('Мост файлов не настроен');
-    final uri = Uri.parse('$url/fs/read').replace(queryParameters: {'path': path});
+    if (url == null || token == null) {
+      throw Exception('Мост файлов не настроен');
+    }
+    final uri = Uri.parse('$url/fs/read')
+        .replace(queryParameters: {'path': path});
     final res = await http
         .get(uri, headers: {'Authorization': 'Bearer $token'})
         .timeout(const Duration(seconds: 20));
@@ -423,7 +512,9 @@ class AppState extends ChangeNotifier {
 
   static String? workspaceKeyOf(Map<String, dynamic> w) {
     final identity = w['workspaceIdentity'];
-    if (identity is String && identity.trim().isNotEmpty) return identity.trim();
+    if (identity is String && identity.trim().isNotEmpty) {
+      return identity.trim();
+    }
     final path = w['workspacePath'];
     if (path is String && path.isNotEmpty) return path;
     for (final key in const ['workspaceKey', 'key', 'id']) {
@@ -438,17 +529,21 @@ class AppState extends ChangeNotifier {
     if (label is String && label.trim().isNotEmpty) return label.trim();
     final key = workspaceKeyOf(w);
     if (key == null) return 'Проект';
-    final parts = key.split(RegExp(r'[\\/]')).where((p) => p.isNotEmpty).toList();
+    final parts = key
+        .split(RegExp(r'[\\/]'))
+        .where((p) => p.isNotEmpty)
+        .toList();
     return parts.isEmpty ? key : parts.last;
   }
 
-  String get workspaceKey => workspace == null ? '' : (workspaceKeyOf(workspace!) ?? '');
+  String get workspaceKey =>
+      workspace == null ? '' : (workspaceKeyOf(workspace!) ?? '');
 
   Map<String, dynamic> get _scope => {
-        'workspacePath': workspace?['workspacePath'],
-        if (workspace?['workspaceIdentity'] != null)
-          'workspaceIdentity': workspace!['workspaceIdentity'],
-      };
+    'workspacePath': workspace?['workspacePath'],
+    if (workspace?['workspaceIdentity'] != null)
+      'workspaceIdentity': workspace!['workspaceIdentity'],
+  };
 
   Future<void> openWorkspace(Map<String, dynamic> w) async {
     if (workspaceKeyOf(w) == null || _client == null) return;
@@ -473,10 +568,136 @@ class AppState extends ChangeNotifier {
       modelCatalog = _readCachedCatalog();
       notifyListeners();
       unawaited(loadModelCatalog());
+      unawaited(refreshProjectFeeds());
     } catch (e) {
       error = _humanError(e);
       notifyListeners();
     }
+  }
+
+  /// Loads every desktop project with its tasks in one call
+  /// (`project.readTree`). The active project stays on the live
+  /// sessions-index; the others are a snapshot refreshed on demand.
+  Future<void> refreshProjectFeeds() {
+    final pending = _feedRefresh;
+    if (pending != null) return pending;
+    final future = _doRefreshProjectFeeds().whenComplete(() {
+      _feedRefresh = null;
+    });
+    _feedRefresh = future;
+    return future;
+  }
+
+  Future<void> _doRefreshProjectFeeds() async {
+    final transport = _transport;
+    if (transport == null) return;
+    projectFeedsLoading = true;
+    notifyListeners();
+    try {
+      final tree = await transport.readProjectTree().timeout(
+        const Duration(seconds: 20),
+      );
+      final projects = (tree['projects'] as List? ?? const [])
+          .whereType<Map>()
+          .map((e) => e.cast<String, dynamic>())
+          .where((p) => p['deleted'] != true)
+          .toList();
+      final allTasks = <Map<String, dynamic>>[];
+      for (final t in (tree['tasks'] as List? ?? const [])) {
+        if (t is Map) allTasks.add(t.cast<String, dynamic>());
+      }
+      final activePath = workspace == null
+          ? null
+          : '${workspace!['workspacePath'] ?? ''}';
+      final next = <ProjectFeed>[];
+      for (final project in projects) {
+        final projectId = '${project['id'] ?? ''}';
+        final roots = (project['roots'] as List? ?? const [])
+            .map((r) => r is Map ? '${r['rootPath'] ?? ''}' : '$r')
+            .where((p) => p.isNotEmpty)
+            .toList();
+        Map<String, dynamic>? appWorkspace;
+        for (final w in workspaces) {
+          final path = '${w['workspacePath'] ?? ''}';
+          if ((path.isNotEmpty && roots.contains(path)) ||
+              (projectId.isNotEmpty && workspaceKeyOf(w) == projectId)) {
+            appWorkspace = w;
+            break;
+          }
+        }
+        final isActive =
+            activePath != null &&
+            activePath.isNotEmpty &&
+            (roots.contains(activePath) ||
+                (projectId.isNotEmpty && workspaceKey == projectId));
+        if (isActive) continue;
+        final tasks = <Map<String, dynamic>>[];
+        for (final t in (project['tasks'] as List? ?? const [])) {
+          if (t is Map) tasks.add(t.cast<String, dynamic>());
+        }
+        if (projectId.isNotEmpty) {
+          for (final t in allTasks) {
+            if ('${t['projectId'] ?? ''}' == projectId) tasks.add(t);
+          }
+        }
+        final feed = ProjectFeed(project, appWorkspace: appWorkspace);
+        feed.sessions = tasks
+            .map(_sessionFromTask)
+            .whereType<SessionSummary>()
+            .toList();
+        feed.loading = false;
+        next.add(feed);
+      }
+      projectFeeds
+        ..clear()
+        ..addAll(next);
+    } catch (e) {
+      for (final feed in projectFeeds) {
+        feed.loading = false;
+        feed.error = _humanError(e);
+      }
+    } finally {
+      projectFeedsLoading = false;
+      notifyListeners();
+    }
+  }
+
+  SessionSummary? _sessionFromTask(Map<String, dynamic> task) {
+    final id = '${task['taskId'] ?? task['sessionId'] ?? task['id'] ?? ''}';
+    if (id.isEmpty) return null;
+    final preview =
+        task['lastAssistantPreview'] ??
+        task['lastMessagePreview'] ??
+        task['preview'];
+    final updatedRaw =
+        task['lastActivityAt'] ?? task['updatedAt'] ?? task['createdAt'];
+    final updatedAt = updatedRaw is num ? updatedRaw.toInt() : 0;
+    return SessionSummary(
+      sessionId: id,
+      title: '${task['title'] ?? task['name'] ?? ''}',
+      phase: '${task['status'] ?? task['phase'] ?? task['runState'] ?? ''}',
+      preview: preview?.toString(),
+      updatedAt: updatedAt,
+      hasBackgroundWork: task['hasBackgroundWork'] == true,
+    );
+  }
+
+  /// Opens a task that belongs to another project: switch to the matching
+  /// bootstrap workspace first, then subscribe the conversation.
+  Future<void> openSessionInProject(
+    ProjectFeed feed,
+    SessionSummary session,
+  ) async {
+    final target = feed.appWorkspace;
+    if (target == null) {
+      error = 'Этот проект не открыт в ZCode на компьютере';
+      notifyListeners();
+      return;
+    }
+    if (AppState.workspaceKeyOf(target) != workspaceKey) {
+      await openWorkspace(target);
+    }
+    await openSession(session.sessionId, title: session.displayTitle);
   }
 
   void _onSessionsChanged() {
@@ -489,7 +710,8 @@ class AppState extends ChangeNotifier {
     return sub.state.list.map((e) => SessionSummary.fromMap(e.raw)).toList();
   }
 
-  bool get sessionsLoading => _sessionsSub != null && !_sessionsSub!.state.ready;
+  bool get sessionsLoading =>
+      _sessionsSub != null && !_sessionsSub!.state.ready;
   bool get connected => relayState == RelayState.paired && _bridge != null;
 
   ConversationState? get conversation => _convSub?.state;
@@ -504,15 +726,31 @@ class AppState extends ChangeNotifier {
     sessionTitle = title;
     notifyListeners();
     try {
-      final sub = await transport.subscribe(id);
+      // Make sure the desktop's mobile view points at this workspace/task
+      // before subscribing.
+      await _client?.sendMobileViewState(
+        workspaceKey: workspaceKey,
+        taskId: id,
+      );
+      final sub = await transport
+          .subscribe(id)
+          .timeout(const Duration(seconds: 30));
       _convSub = sub;
       sub.state.addListener(_onConversationChanged);
       _onConversationChanged();
-      // prepareWorkspace disappeared in 3.17; model/mode options also arrive
-      // in the conversation snapshot, so a failure here is not fatal.
-      try {
-        prep = await transport.prepareWorkspace();
-      } catch (_) {}
+      // prepareWorkspace disappeared in 3.17; model/mode options arrive in
+      // the conversation snapshot. Never await it here: an absent/hanging
+      // channel method used to keep `openingSession` stuck forever, blocking
+      // every other task tap. Fire and forget with a short timeout.
+      unawaited(
+        transport
+            .prepareWorkspace()
+            .timeout(const Duration(seconds: 4))
+            .then<void>((value) {
+              prep = value;
+            })
+            .catchError((_) {}),
+      );
     } catch (e) {
       error = _humanError(e);
     } finally {
@@ -547,10 +785,15 @@ class AppState extends ChangeNotifier {
     await _disposeSession();
     draft = false;
     notifyListeners();
+    // Feeds skipped while the chat was open can load now.
+    unawaited(refreshProjectFeeds());
   }
 
   Future<void> _disposeSession() async {
     _cfgDumped = false;
+    pendingModelValue = null;
+    pendingThought = null;
+    pendingMode = null;
     final sub = _convSub;
     _convSub = null;
     if (sub != null) {
@@ -562,75 +805,119 @@ class AppState extends ChangeNotifier {
     prep = null;
   }
 
-  Future<void> send(
+  Future<SendOutcome> send(
     String text, {
     String? heldQueueDisposition,
+    String? requestedDelivery,
     List<PendingAttachment> attachments = const [],
   }) async {
     final transport = _transport;
     final body = text.trim();
-    if (transport == null) return;
-    if (body.isEmpty && attachments.isEmpty) return;
-    if (sending) return;
+    if (transport == null) return SendOutcome.failed;
+    if (body.isEmpty && attachments.isEmpty) return SendOutcome.failed;
+    if (sending) return SendOutcome.failed;
     sending = true;
     notifyListeners();
     try {
+      final selection = _modelSelectionPayload();
+      final mode = _modePayload();
+      // Desktop CAS handshake: while the held queue is non-empty the server
+      // wants the ids it based its decision on (hence "confirmation stale").
+      final expectedQueueIds = queueItems
+          .map((e) => '${e['queueItemId'] ?? ''}')
+          .where((e) => e.isNotEmpty)
+          .toList();
       if (sessionId == null) {
-        Map<String, dynamic>? config;
-        final draftModel = draftModelValue;
-        if (draftModel != null && draftModel.contains('/')) {
-          final idx = draftModel.lastIndexOf('/');
-          config = {
-            'provider': draftModel.substring(0, idx),
-            'model': draftModel.substring(idx + 1),
-            if (draftThought != null) 'thought': draftThought,
-          };
-        }
         // Attachments need a live subscription before upload, so the first
         // message goes as a follow-up command in that case.
         final created = await transport.createSession(
           workspaceKey,
           firstText: attachments.isEmpty ? body : null,
-          config: config,
+          firstInputConfig: {'modelSelection': ?selection, ...mode},
         );
         sessionId = created;
-        draftModelValue = null;
-        draftThought = null;
         final sub = await transport.subscribe(created);
         _convSub = sub;
         sub.state.addListener(_onConversationChanged);
-        try {
-          prep ??= await transport.prepareWorkspace();
-        } catch (_) {}
+        if (prep == null) {
+          unawaited(
+            transport
+                .prepareWorkspace()
+                .timeout(const Duration(seconds: 4))
+                .then<void>((value) {
+                  prep = value;
+                })
+                .catchError((_) {}),
+          );
+        }
         if (attachments.isNotEmpty) {
           final descriptors = await _uploadAttachments(attachments);
-          await transport.sendText(
+          final res = await transport.sendText(
             created,
             body,
             attachments: descriptors,
             heldQueueDisposition: heldQueueDisposition,
+            requestedDelivery: requestedDelivery,
+            modelSelection: selection,
+            mode: mode['mode'] as String?,
+            planEnabled: mode['planEnabled'] as bool?,
+            expectedHeldQueueItemIds: expectedQueueIds,
           );
+          final outcome = _sendOutcome(res);
+          if (outcome != SendOutcome.sent) return outcome;
         }
       } else {
         final descriptors = await _uploadAttachments(attachments);
-        await transport.sendText(
+        final res = await transport.sendText(
           sessionId!,
           body,
           attachments: descriptors.isEmpty ? null : descriptors,
           heldQueueDisposition: heldQueueDisposition,
+          requestedDelivery: requestedDelivery,
+          modelSelection: selection,
+          mode: mode['mode'] as String?,
+          planEnabled: mode['planEnabled'] as bool?,
+          expectedHeldQueueItemIds: expectedQueueIds,
         );
+        final outcome = _sendOutcome(res);
+        if (outcome != SendOutcome.sent) return outcome;
       }
+      draftModelValue = null;
+      draftThought = null;
+      // Keep the composer selection: like the desktop draft it stays active
+      // for the following messages until the user picks another one.
       error = null;
+      return SendOutcome.sent;
     } catch (e) {
       error = _humanError(e);
+      return SendOutcome.failed;
     } finally {
       sending = false;
       notifyListeners();
     }
   }
 
+  SendOutcome _sendOutcome(dynamic res) {
+    if (res is! Map) return SendOutcome.sent;
+    final status = '${res['status'] ?? ''}';
+    if (status == 'accepted' ||
+        status == 'duplicate' ||
+        status == 'noop' ||
+        status == 'authoritative') {
+      return SendOutcome.sent;
+    }
+    final reason = '${res['reasonCode'] ?? ''}';
+    if (status == 'confirmationRequired' ||
+        reason == 'guard.heldQueueConfirmationStale') {
+      return SendOutcome.needsQueueChoice;
+    }
+    error = reason.isEmpty ? 'Сообщение не принято: $status' : reason;
+    return SendOutcome.failed;
+  }
+
   Future<List<Map<String, dynamic>>> _uploadAttachments(
-      List<PendingAttachment> files) async {
+    List<PendingAttachment> files,
+  ) async {
     final transport = _transport;
     final id = sessionId;
     if (transport == null || id == null || files.isEmpty) return const [];
@@ -675,8 +962,7 @@ class AppState extends ChangeNotifier {
       conversation?.config?['followupMode']?.toString() ?? 'queue';
 
   /// `startNow | enqueue | guide | reject | choice` from the snapshot.
-  String get inputRoutingMode =>
-      conversation?.inputRoutingMode ?? 'startNow';
+  String get inputRoutingMode => conversation?.inputRoutingMode ?? 'startNow';
 
   bool get turnRunning => conversation?.isRunning == true;
 
@@ -764,54 +1050,179 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  Future<void> setMode(String mode) async {
+  // ------------------------------------------------- task management
+
+  void _patchTaskEverywhere(String id, {String? title, bool remove = false}) {
+    final live = _sessionsSub?.state;
+    if (live != null) {
+      if (remove) {
+        live.optimisticRemove(id);
+      } else if (title != null) {
+        live.optimisticRename(id, title);
+      }
+    }
+    for (final feed in projectFeeds) {
+      if (remove) {
+        feed.sessions = feed.sessions.where((s) => s.sessionId != id).toList();
+      } else if (title != null) {
+        feed.sessions = feed.sessions
+            .map(
+              (s) => s.sessionId == id
+                  ? SessionSummary(
+                      sessionId: s.sessionId,
+                      title: title,
+                      phase: s.phase,
+                      preview: s.preview,
+                      updatedAt: s.updatedAt,
+                      hasBackgroundWork: s.hasBackgroundWork,
+                    )
+                  : s,
+            )
+            .toList();
+      }
+    }
+    notifyListeners();
+  }
+
+  Future<void> renameCurrentSession(String title) async {
+    final transport = _transport;
+    final id = sessionId;
+    final clean = title.trim();
+    if (transport == null || id == null || clean.isEmpty) return;
+    try {
+      await transport.renameTask(id, clean);
+      sessionTitle = clean;
+      _patchTaskEverywhere(id, title: clean);
+      notifyListeners();
+    } catch (e) {
+      error = _humanError(e);
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  Future<void> archiveCurrentSession() async {
     final transport = _transport;
     final id = sessionId;
     if (transport == null || id == null) return;
     try {
-      await transport.switchCollaborationMode(id, mode);
-      conversation?.optimisticPatch({
-        'config': {...?conversation!.config, 'mode': mode},
-      });
+      await transport.archiveTask(id);
+      _patchTaskEverywhere(id, remove: true);
+      await closeChat();
     } catch (e) {
       error = _humanError(e);
       notifyListeners();
+      rethrow;
     }
+  }
+
+  Future<void> deleteCurrentSession() async {
+    final transport = _transport;
+    final id = sessionId;
+    if (transport == null || id == null) return;
+    try {
+      await transport.deleteSession(id);
+      _patchTaskEverywhere(id, remove: true);
+      await closeChat();
+    } catch (e) {
+      error = _humanError(e);
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> desktopProjects() async {
+    final transport = _transport;
+    if (transport == null) return const [];
+    return transport.readProjects();
+  }
+
+  Future<void> moveCurrentSessionToProject(String projectId) async {
+    final transport = _transport;
+    final id = sessionId;
+    if (transport == null || id == null) return;
+    try {
+      await transport.moveTask(id, projectId);
+      _patchTaskEverywhere(id, remove: true);
+      await closeChat();
+      unawaited(refreshProjectFeeds());
+    } catch (e) {
+      error = _humanError(e);
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  /// Mode is part of the composer draft on the desktop, not a session
+  /// command: it is sent with the next message (`mode` + `planEnabled`).
+  Future<void> setMode(String mode) async {
+    pendingMode = mode;
+    conversation?.optimisticPatch({
+      'config': {...?conversation?.config, 'mode': mode},
+    });
+    notifyListeners();
   }
 
   /// The catalog: desktop `model-provider.getAll` (providers + their models).
   Future<void> loadModelCatalog({bool refresh = false}) async {
-    final bridge = _bridge;
-    if (bridge == null) {
-      modelCatalogError = 'Нет соединения с компьютером';
-      notifyListeners();
-      return;
-    }
     if (modelCatalogLoading) return;
     if (!refresh && modelCatalog.isNotEmpty) return;
     modelCatalogLoading = true;
     modelCatalogError = null;
     notifyListeners();
     try {
-      final res = await bridge.channels.call(
-        'model-provider',
-        'getAll',
-        const [],
-      );
-      final parsed = _parseProviders(res);
-      if (parsed.isNotEmpty) {
-        modelCatalog = parsed;
-        await _cacheCatalog(parsed);
-      } else if (modelCatalog.isEmpty) {
-        modelCatalogError = 'Компьютер не вернул список моделей';
+      // Primary path (no PC setup): the desktop composer's own
+      // `modelSelectionService.getView()` over the already-paired relay.
+      final transport = _transport;
+      if (transport != null) {
+        try {
+          final view = await transport.modelSelectionView().timeout(
+            const Duration(seconds: 12),
+          );
+          final parsed = _parseModelSelectionView(view);
+          if (parsed.isNotEmpty) {
+            modelCatalog = parsed;
+            await _cacheCatalog(parsed);
+            return;
+          }
+        } catch (_) {
+          // Older desktop or transient error — try the LAN bridge below.
+        }
       }
-    } catch (e) {
+      // Fallback: 3.17 removed `model-provider`; the LAN bridge serves the
+      // desktop registry when configured.
+      final viaBridge = await _loadCatalogFromBridge();
+      if (viaBridge.isNotEmpty) {
+        modelCatalog = viaBridge;
+        await _cacheCatalog(viaBridge);
+        return;
+      }
+      final bridge = _bridge;
+      if (bridge != null) {
+        try {
+          final res = await bridge.channels.call(
+            'model-provider',
+            'getAll',
+            const [],
+          );
+          final parsed = _parseProviders(res);
+          if (parsed.isNotEmpty) {
+            modelCatalog = parsed;
+            await _cacheCatalog(parsed);
+            return;
+          }
+        } catch (_) {
+          // Channel is absent in 3.17 — expected, fall through to cache.
+        }
+      }
       if (modelCatalog.isEmpty) {
         final cached = _readCachedCatalog();
         if (cached.isNotEmpty) {
           modelCatalog = cached;
         } else {
-          modelCatalogError = _humanError(e);
+          modelCatalogError =
+              'Не удалось получить список моделей с компьютера. Проверь, что '
+              'ZCode на связи, и попробуй ещё раз.';
         }
       }
     } finally {
@@ -820,10 +1231,92 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// Model registry served by the desktop bridge (`GET /models`).
+  Future<List<ModelOption>> _loadCatalogFromBridge() async {
+    final url = bridgeFsUrl;
+    final token = await _bridgeToken;
+    if (url == null || token == null) return const [];
+    try {
+      final res = await http
+          .get(
+            Uri.parse('$url/models'),
+            headers: {'Authorization': 'Bearer $token'},
+          )
+          .timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) return const [];
+      final data = jsonDecode(utf8.decode(res.bodyBytes));
+      final models = data is Map ? data['models'] : null;
+      if (models is! List) return const [];
+      final out = <ModelOption>[];
+      for (final m in models.whereType<Map>()) {
+        final option = ModelOption.fromJson(m.cast<String, dynamic>());
+        if (option != null) out.add(option);
+      }
+      return out;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Parses `modelSelectionService.getView()`. The view is a list of provider
+  /// groups (`{key: 'registry-provider:<id>', label, items:[{value,name}]}`).
+  List<ModelOption> _parseModelSelectionView(dynamic res) {
+    final map = res is Map ? res : null;
+    final providers = map?['providers'];
+    if (providers is! List) return const [];
+    final out = <ModelOption>[];
+    final seen = <String>{};
+    for (final group in providers.whereType<Map>()) {
+      final groupMap = group.cast<String, dynamic>();
+      final key = '${groupMap['key'] ?? ''}';
+      var providerId = '${groupMap['providerId'] ?? ''}'.trim();
+      if (providerId.isEmpty && key.isNotEmpty) {
+        providerId = key
+            .replaceFirst(RegExp(r'^registry-provider:'), '')
+            .trim();
+      }
+      if (providerId.isEmpty) continue;
+      final providerName =
+          '${groupMap['label'] ?? groupMap['providerName'] ?? providerId}'
+              .trim();
+      final items = groupMap['items'] ?? groupMap['models'];
+      if (items is! List) continue;
+      for (final item in items.whereType<Map>()) {
+        final itemMap = item.cast<String, dynamic>();
+        var value =
+            '${itemMap['value'] ?? itemMap['modelId'] ?? itemMap['id'] ?? itemMap['name'] ?? ''}'
+                .trim();
+        if (value.isEmpty) continue;
+        var pid = providerId;
+        var modelId = value;
+        final slash = value.indexOf('/');
+        if (slash > 0 && slash < value.length - 1) {
+          pid = value.substring(0, slash);
+          modelId = value.substring(slash + 1);
+        }
+        final dedupe = '$pid/$modelId';
+        if (!seen.add(dedupe)) continue;
+        out.add(
+          ModelOption(
+            providerId: pid,
+            providerName: providerName.isEmpty ? pid : providerName,
+            modelId: modelId,
+            modelName: itemMap['name']?.toString(),
+            description: itemMap['description']?.toString(),
+            enabled: itemMap['enabled'] != false,
+          ),
+        );
+      }
+    }
+    return out;
+  }
+
   List<ModelOption> _parseProviders(dynamic res) {
     final list = res is List
         ? res
-        : (res is Map && res['providers'] is List ? res['providers'] as List : const []);
+        : (res is Map && res['providers'] is List
+              ? res['providers'] as List
+              : const []);
     final out = <ModelOption>[];
     for (final p in list.whereType<Map>()) {
       final providerId = '${p['id'] ?? p['providerId'] ?? ''}'.trim();
@@ -833,22 +1326,27 @@ class AppState extends ChangeNotifier {
       if (models is! List) continue;
       for (final m in models) {
         if (m is String && m.trim().isNotEmpty) {
-          out.add(ModelOption(
-            providerId: providerId,
-            providerName: providerName,
-            modelId: m.trim(),
-          ));
+          out.add(
+            ModelOption(
+              providerId: providerId,
+              providerName: providerName,
+              modelId: m.trim(),
+            ),
+          );
         } else if (m is Map) {
           final modelId =
-              '${m['id'] ?? m['modelId'] ?? m['model_id'] ?? m['name'] ?? ''}'.trim();
+              '${m['id'] ?? m['modelId'] ?? m['model_id'] ?? m['name'] ?? ''}'
+                  .trim();
           if (modelId.isEmpty) continue;
-          out.add(ModelOption(
-            providerId: providerId,
-            providerName: providerName,
-            modelId: modelId,
-            modelName: (m['displayName'] ?? m['name'])?.toString(),
-            description: m['description'] as String?,
-          ));
+          out.add(
+            ModelOption(
+              providerId: providerId,
+              providerName: providerName,
+              modelId: modelId,
+              modelName: (m['displayName'] ?? m['name'])?.toString(),
+              description: m['description'] as String?,
+            ),
+          );
         }
       }
     }
@@ -888,54 +1386,90 @@ class AppState extends ChangeNotifier {
     await setModelParts(provider, model, thought: thought);
   }
 
-  /// Explicit provider+model switch (desktop semantics). Falls back to saving
-  /// a draft choice when called before the first message of a new chat.
-  Future<void> setModelParts(String provider, String model,
-      {String? thought}) async {
-    final transport = _transport;
-    final id = sessionId;
+  /// Desktop semantics: the picker only stores the choice in the composer
+  /// draft. It travels with the next `sendText`; there is no switch command.
+  Future<void> setModelParts(
+    String provider,
+    String model, {
+    String? thought,
+  }) async {
     final state = conversation;
-    if (transport == null || id == null || state == null) {
-      draftModelValue = '$provider/$model';
-      if (thought != null) draftThought = thought;
-      notifyListeners();
-      return;
-    }
-    final chosenThought = thought ??
-        (state.currentThought.isNotEmpty
-            ? state.currentThought
-            : '${prep?.option('thought_level')?.currentValue ?? 'enabled'}');
-    try {
-      await transport.switchModelConfig(
-        id,
-        provider: provider,
-        model: model,
-        thought: chosenThought,
-      );
+    if (state != null) {
+      final chosenThought = thought ?? state.currentThought;
+      pendingModelValue = '$provider/$model';
+      pendingThought = chosenThought.isEmpty ? null : chosenThought;
       state.optimisticPatch({
         'config': {
           ...?state.config,
           'provider': provider,
           'model': model,
-          'thought': chosenThought,
+          if (pendingThought != null) 'thought': pendingThought,
         },
       });
-      draftModelValue = null;
-      draftThought = null;
-    } catch (e) {
-      error = _humanError(e);
-      notifyListeners();
+    } else {
+      draftModelValue = '$provider/$model';
+      if (thought != null) draftThought = thought;
     }
+    notifyListeners();
   }
 
   String? get currentModelValue {
+    if (pendingModelValue != null) return pendingModelValue;
     final cfg = conversation?.config;
     final provider = cfg?['provider']?.toString();
     final model = cfg?['model']?.toString();
     if (model != null && model.isNotEmpty) {
-      return provider != null && provider.isNotEmpty ? '$provider/$model' : model;
+      return provider != null && provider.isNotEmpty
+          ? '$provider/$model'
+          : model;
     }
     return draftModelValue;
+  }
+
+  String get currentModeValue =>
+      pendingMode ?? conversation?.currentMode ?? 'build';
+
+  String get currentThoughtValue {
+    if (pendingThought != null) return pendingThought!;
+    final thought = conversation?.currentThought ?? '';
+    if (thought.isNotEmpty) return thought;
+    return draftThought ?? '';
+  }
+
+  /// `modelSelection` payload at desktop wire format. Reasoning level is only
+  /// attached when it is known to be valid for this model (the bridge registry
+  /// has no option specs, so an explicit user pick wins; otherwise omit it).
+  Map<String, dynamic>? _modelSelectionPayload() {
+    final value = currentModelValue;
+    if (value == null || !value.contains('/')) return null;
+    final idx = value.lastIndexOf('/');
+    final provider = value.substring(0, idx);
+    final model = value.substring(idx + 1);
+    if (provider.isEmpty || model.isEmpty) return null;
+    final cfg = conversation?.config;
+    final sameModel =
+        cfg?['provider']?.toString() == provider &&
+        cfg?['model']?.toString() == model;
+    String? cfgThought;
+    if (sameModel && cfg != null) {
+      cfgThought = cfg['thought']?.toString();
+    }
+    final thought =
+        pendingThought ??
+        cfgThought ??
+        (draftThought?.isNotEmpty == true ? draftThought : null);
+    return {
+      'providerId': provider,
+      'modelId': model,
+      if (thought != null && thought.isNotEmpty)
+        'options': {'reasoningLevel': thought},
+    };
+  }
+
+  Map<String, dynamic> _modePayload() {
+    final mode = currentModeValue;
+    if (mode == 'plan') return {'mode': 'build', 'planEnabled': true};
+    return {'mode': mode, 'planEnabled': false};
   }
 
   Future<void> resolveInteraction(
@@ -989,7 +1523,10 @@ class AppState extends ChangeNotifier {
         firstRowId ??= (res['firstRowId'] as num?)?.toInt();
         if (rows != null) {
           state.prependOlderRows(
-            rows.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList(),
+            rows
+                .whereType<Map>()
+                .map((e) => e.cast<String, dynamic>())
+                .toList(),
             firstRowId,
           );
         }
@@ -1042,6 +1579,7 @@ class AppState extends ChangeNotifier {
       sessionsSub.state.removeListener(_onSessionsChanged);
       await sessionsSub.dispose();
     }
+    projectFeeds.clear();
     _bridge?.dispose();
     _bridge = null;
     _transport = null;

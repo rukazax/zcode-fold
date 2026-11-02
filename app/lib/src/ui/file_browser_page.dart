@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../models.dart';
+import 'pc_bridge_dialog.dart';
 import 'theme.dart';
 
 /// Read-only browser for the project folder on the computer. Served by
@@ -54,6 +55,28 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     }
   }
 
+  Future<void> _configureBridge() async {
+    // Zero-input path first: reuse the saved bridge / loopback (adb reverse).
+    if (await widget.state.autoConfigurePc()) {
+      if (!mounted) return;
+      setState(() {
+        _path = widget.initialPath;
+        _history.clear();
+      });
+      await _load();
+      return;
+    }
+    if (!mounted) return;
+    final saved = await showPcBridgeDialog(context, widget.state);
+    if (saved && mounted) {
+      setState(() {
+        _path = widget.initialPath;
+        _history.clear();
+      });
+      await _load();
+    }
+  }
+
   void _enter(PcFileEntry entry) {
     setState(() {
       _history.add(_path ?? '');
@@ -77,8 +100,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Файлы ПК',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            Text(
+              'Файлы ПК',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
             Text(
               _path ?? 'корень проекта',
               maxLines: 1,
@@ -92,8 +117,17 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
             IconButton(
               tooltip: 'Вверх',
               onPressed: _up,
-              icon: Icon(Icons.arrow_upward_rounded, size: 20, color: Pal.muted),
+              icon: Icon(
+                Icons.arrow_upward_rounded,
+                size: 20,
+                color: Pal.muted,
+              ),
             ),
+          IconButton(
+            tooltip: 'Настроить ПК удалённо',
+            onPressed: _configureBridge,
+            icon: Icon(Icons.tune_rounded, size: 20, color: Pal.muted),
+          ),
           IconButton(
             tooltip: 'Обновить',
             onPressed: _load,
@@ -101,7 +135,17 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           ),
         ],
       ),
-      body: _body(),
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onHorizontalDragEnd: (details) {
+          // Swipe right anywhere on the page closes it (same gesture family
+          // as the collapsible side panels).
+          if ((details.primaryVelocity ?? 0) > 220) {
+            Navigator.of(context).maybePop();
+          }
+        },
+        child: _body(),
+      ),
     );
   }
 
@@ -123,16 +167,29 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           children: [
             Icon(Icons.folder_off_outlined, size: 34, color: Pal.muted),
             SizedBox(height: 10),
-            Text(_error!, textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12.5, color: Pal.muted, height: 1.4)),
+            Text(
+              _error!,
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12.5, color: Pal.muted, height: 1.4),
+            ),
             SizedBox(height: 14),
             Text(
-              'Запусти на компьютере:\nnode tools/bridge.mjs --serve\n'
-              'и укажи в настройках адрес с токеном.',
+              widget.state.hasPcFiles
+                  ? 'Мост не ответил. Проверь, что на компьютере запущен '
+                        'node tools/bridge.mjs --serve, и обнови адрес/токен.'
+                  : 'Мост ещё не настроен. Подключи папку проекта на ПК '
+                        'прямо отсюда — понадобятся URL и токен, которые печатает '
+                        'bridge.mjs --serve.',
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 11.5, color: Pal.muted, height: 1.5),
             ),
             SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _configureBridge,
+              icon: Icon(Icons.settings_ethernet_rounded, size: 18),
+              label: Text('Настроить ПК удалённо'),
+            ),
+            SizedBox(height: 8),
             OutlinedButton(onPressed: _load, child: Text('Повторить')),
           ],
         ),
@@ -151,20 +208,30 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         return ListTile(
           dense: true,
           leading: Icon(
-            entry.isDir ? Icons.folder_outlined : Icons.insert_drive_file_outlined,
+            entry.isDir
+                ? Icons.folder_outlined
+                : Icons.insert_drive_file_outlined,
             size: 19,
             color: entry.isDir ? Pal.accent : Pal.muted,
           ),
-          title: Text(entry.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 13)),
+          title: Text(
+            entry.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 13),
+          ),
           subtitle: entry.isDir
               ? null
-              : Text(_size(entry.size),
-                  style: TextStyle(fontSize: 10.5, color: Pal.muted)),
+              : Text(
+                  _size(entry.size),
+                  style: TextStyle(fontSize: 10.5, color: Pal.muted),
+                ),
           onTap: () => entry.isDir ? _enter(entry) : _openFile(entry),
-          trailing: Icon(Icons.chevron_right_rounded, size: 18, color: Pal.muted),
+          trailing: Icon(
+            Icons.chevron_right_rounded,
+            size: 18,
+            color: Pal.muted,
+          ),
         );
       },
     );
@@ -217,6 +284,9 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       await showModalBottomSheet(
         context: context,
         isScrollControlled: true,
+        isDismissible: true,
+        enableDrag: true,
+        showDragHandle: true,
         backgroundColor: Pal.surface,
         builder: (_) => DraggableScrollableSheet(
           expand: false,
@@ -226,27 +296,34 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
               children: [
                 Padding(
                   padding: EdgeInsets.fromLTRB(16, 12, 8, 8),
-                  child: Row(children: [
-                    Expanded(
-                      child: Text(entry.name,
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          entry.name,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontWeight: FontWeight.w600)),
-                    ),
-                    IconButton(
-                      tooltip: 'Скопировать путь',
-                      onPressed: () async {
-                        await _copyPath(entry.path);
-                        if (context.mounted) Navigator.pop(context);
-                      },
-                      icon: Icon(Icons.content_copy_rounded,
-                          size: 18, color: Pal.muted),
-                    ),
-                    IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: Icon(Icons.close_rounded, size: 18),
-                    ),
-                  ]),
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Скопировать путь',
+                        onPressed: () async {
+                          await _copyPath(entry.path);
+                          if (context.mounted) Navigator.pop(context);
+                        },
+                        icon: Icon(
+                          Icons.content_copy_rounded,
+                          size: 18,
+                          color: Pal.muted,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: Icon(Icons.close_rounded, size: 18),
+                      ),
+                    ],
+                  ),
                 ),
                 Expanded(
                   child: SingleChildScrollView(
@@ -262,9 +339,8 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось открыть: $e')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Не удалось открыть: $e')));
     }
   }
 

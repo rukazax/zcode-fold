@@ -5,6 +5,7 @@ import 'chat_pane.dart';
 import 'connect_page.dart';
 import 'file_browser_page.dart';
 import 'fold_layout.dart';
+import 'pc_bridge_dialog.dart';
 import 'sessions_pane.dart';
 import 'theme.dart';
 
@@ -58,8 +59,12 @@ class _HomePageState extends State<HomePage> {
                             },
                             child: SessionsPane(
                               state: state,
-                              onOpen: (s) => state.openSession(s.sessionId,
-                                  title: s.title),
+                              onOpen: (s) => state.openSession(
+                                s.sessionId,
+                                title: s.title,
+                              ),
+                              onOpenInProject: (feed, s) =>
+                                  state.openSessionInProject(feed, s),
                               onNew: state.startDraft,
                               onSettings: () => _showSettings(context),
                               onCollapse: () =>
@@ -73,10 +78,7 @@ class _HomePageState extends State<HomePage> {
                   ),
                   Expanded(
                     child: open
-                        ? ChatPane(
-                            state: state,
-                            onBack: state.closeChat,
-                          )
+                        ? ChatPane(state: state, onBack: state.closeChat)
                         : _placeholder(),
                   ),
                 ],
@@ -98,7 +100,10 @@ class _HomePageState extends State<HomePage> {
                   : SessionsPane(
                       key: ValueKey('list'),
                       state: state,
-                      onOpen: (s) => state.openSession(s.sessionId, title: s.title),
+                      onOpen: (s) =>
+                          state.openSession(s.sessionId, title: s.title),
+                      onOpenInProject: (feed, s) =>
+                          state.openSessionInProject(feed, s),
                       onNew: state.startDraft,
                       onSettings: () => _showSettings(context),
                     ),
@@ -127,8 +132,11 @@ class _HomePageState extends State<HomePage> {
         child: Column(
           children: [
             SizedBox(height: 10),
-            Icon(Icons.keyboard_double_arrow_right_rounded,
-                size: 18, color: Pal.muted),
+            Icon(
+              Icons.keyboard_double_arrow_right_rounded,
+              size: 18,
+              color: Pal.muted,
+            ),
             SizedBox(height: 6),
             Icon(Icons.forum_outlined, size: 18, color: Pal.accent),
             SizedBox(height: 6),
@@ -150,15 +158,22 @@ class _HomePageState extends State<HomePage> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.devices_fold_outlined,
-              size: 44, color: Pal.muted.withValues(alpha: 0.7)),
+          Icon(
+            Icons.devices_fold_outlined,
+            size: 44,
+            color: Pal.muted.withValues(alpha: 0.7),
+          ),
           SizedBox(height: 14),
-          Text('Выбери сессию слева',
-              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+          Text(
+            'Выбери сессию слева',
+            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+          ),
           SizedBox(height: 6),
-          Text('Или начни новую — экран разложен, работаем в две колонки',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Pal.muted, fontSize: 12.5)),
+          Text(
+            'Или начни новую — экран разложен, работаем в две колонки',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Pal.muted, fontSize: 12.5),
+          ),
         ],
       ),
     );
@@ -170,8 +185,12 @@ class _HomePageState extends State<HomePage> {
       context: context,
       backgroundColor: Pal.surface,
       isScrollControlled: true,
+      isDismissible: true,
+      enableDrag: true,
+      showDragHandle: true,
       shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
       builder: (sheetContext) => AnimatedBuilder(
         animation: state,
         builder: (context, _) {
@@ -188,12 +207,16 @@ class _HomePageState extends State<HomePage> {
                       width: 36,
                       height: 4,
                       decoration: BoxDecoration(
-                          color: Pal.border, borderRadius: BorderRadius.circular(2)),
+                        color: Pal.border,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
                     ),
                   ),
                   SizedBox(height: 16),
-                  Text('Компьютеры',
-                      style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                  Text(
+                    'Компьютеры',
+                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+                  ),
                   SizedBox(height: 10),
                   for (final device in state.devices)
                     ListTile(
@@ -202,14 +225,22 @@ class _HomePageState extends State<HomePage> {
                         device.id == state.activeDevice?.id
                             ? Icons.radio_button_checked
                             : Icons.radio_button_unchecked,
-                        color: device.id == state.activeDevice?.id ? Pal.accent : Pal.muted,
+                        color: device.id == state.activeDevice?.id
+                            ? Pal.accent
+                            : Pal.muted,
                         size: 20,
                       ),
                       title: Text(device.name, style: TextStyle(fontSize: 14)),
-                      subtitle: Text(_host(device.url),
-                          style: TextStyle(color: Pal.muted, fontSize: 11.5)),
+                      subtitle: Text(
+                        _host(device.url),
+                        style: TextStyle(color: Pal.muted, fontSize: 11.5),
+                      ),
                       trailing: IconButton(
-                        icon: Icon(Icons.delete_outline, size: 18, color: Pal.muted),
+                        icon: Icon(
+                          Icons.delete_outline,
+                          size: 18,
+                          color: Pal.muted,
+                        ),
                         onPressed: () => state.removeDevice(device),
                       ),
                       onTap: () {
@@ -221,9 +252,11 @@ class _HomePageState extends State<HomePage> {
                   OutlinedButton.icon(
                     onPressed: () {
                       Navigator.of(sheetContext).pop();
-                      Navigator.of(context).push(MaterialPageRoute(
-                        builder: (_) => ConnectPage(state: state),
-                      ));
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => ConnectPage(state: state),
+                        ),
+                      );
                     },
                     icon: Icon(Icons.add_rounded, size: 18),
                     label: Text('Подключить компьютер'),
@@ -235,19 +268,31 @@ class _HomePageState extends State<HomePage> {
                       _showPcFilesDialog(context);
                     },
                     icon: Icon(Icons.folder_open_rounded, size: 18),
-                    label: Text(state.hasPcFiles
-                        ? 'Файлы ПК: ${state.bridgeFsUrl}'
-                        : 'Файлы ПК (мост)'),
+                    label: Text(
+                      state.hasPcFiles
+                          ? 'Файлы ПК: ${state.bridgeFsUrl}'
+                          : 'Файлы ПК (мост)',
+                    ),
                   ),
                   Divider(height: 28),
-                  Text('Экран',
-                      style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+                  Text(
+                    'Экран',
+                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                  ),
                   SizedBox(height: 6),
                   Text(
                     '${fold.size.width.round()} × ${fold.size.height.round()} dp · '
-                    '${fold.hasVerticalHinge ? 'вертикальный шарнир' : fold.horizontalHinge != null ? 'горизонт. шарнир' : 'без шарнира'} · '
+                    '${fold.hasVerticalHinge
+                        ? 'вертикальный шарнир'
+                        : fold.horizontalHinge != null
+                        ? 'горизонт. шарнир'
+                        : 'без шарнира'} · '
                     '${fold.isUnfolded ? 'две колонки' : 'одна колонка'}',
-                    style: TextStyle(color: Pal.muted, fontSize: 12, height: 1.5),
+                    style: TextStyle(
+                      color: Pal.muted,
+                      fontSize: 12,
+                      height: 1.5,
+                    ),
                   ),
                   SizedBox(height: 14),
                   Text(
@@ -267,7 +312,11 @@ class _HomePageState extends State<HomePage> {
                   Text(
                     'Просмотр, подключение и подтверждения — бесплатны: '
                     'токены списываются, только когда отправлена задача.',
-                    style: TextStyle(color: Pal.muted, fontSize: 11.5, height: 1.45),
+                    style: TextStyle(
+                      color: Pal.muted,
+                      fontSize: 11.5,
+                      height: 1.45,
+                    ),
                   ),
                   SizedBox(height: 16),
                   OutlinedButton.icon(
@@ -280,8 +329,10 @@ class _HomePageState extends State<HomePage> {
                   ),
                   SizedBox(height: 8),
                   Center(
-                    child: Text('ZCode Fold 0.3.8 · прямое подключение ZCode Remote',
-                        style: TextStyle(color: Pal.muted, fontSize: 10.5)),
+                    child: Text(
+                      'ZCode Fold 0.6.0 · прямое подключение ZCode Remote',
+                      style: TextStyle(color: Pal.muted, fontSize: 10.5),
+                    ),
                   ),
                 ],
               ),
@@ -292,73 +343,35 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  void _showPcFilesDialog(BuildContext context) {
+  Future<void> _showPcFilesDialog(BuildContext context) async {
     final state = widget.state;
-    final urlCtrl = TextEditingController(text: state.bridgeFsUrl ?? '');
-    final tokenCtrl = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: Pal.surface,
-        title: Text('Файлы компьютера', style: TextStyle(fontSize: 16)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'На ПК: node tools/bridge.mjs --serve\n'
-              'Скрипт печатает URL и токен — вставь их сюда.',
-              style: TextStyle(fontSize: 11.5, color: Pal.muted, height: 1.4),
-            ),
-            SizedBox(height: 12),
-            TextField(
-              controller: urlCtrl,
-              style: TextStyle(fontSize: 12.5),
-              decoration: InputDecoration(
-                labelText: 'URL моста',
-                hintText: 'http://192.168.x.x:8939',
-                isDense: true,
-              ),
-            ),
-            SizedBox(height: 10),
-            TextField(
-              controller: tokenCtrl,
-              style: TextStyle(fontSize: 12.5),
-              obscureText: true,
-              decoration: InputDecoration(
-                labelText: 'Токен',
-                hintText: 'bridge-fs.token',
-                isDense: true,
-              ),
-            ),
-          ],
+    // Saved bridge → open the project folder directly, no questions asked.
+    var ready = await state.autoConfigurePc();
+    if (!ready) {
+      if (!context.mounted) return;
+      ready = await showPcBridgeDialog(context, state);
+    }
+    if (ready && context.mounted) {
+      final workspace = state.workspace;
+      final path = workspace == null
+          ? null
+          : workspace['workspacePath']?.toString();
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => FileBrowserPage(
+            state: state,
+            initialPath: (path == null || path.isEmpty) ? null : path,
+          ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: Text('Отмена'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              await state.setBridgeFiles(urlCtrl.text, tokenCtrl.text);
-              if (dialogContext.mounted) Navigator.pop(dialogContext);
-              if (context.mounted) {
-                Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => FileBrowserPage(state: state),
-                ));
-              }
-            },
-            child: Text('Сохранить и открыть'),
-          ),
-        ],
-      ),
-    );
+      );
+    }
   }
 
   String _host(String url) {
     final parsed = Uri.tryParse(url);
     if (parsed == null) return url;
-    final name = parsed.queryParameters['name'] ?? parsed.queryParameters['mid'];
+    final name =
+        parsed.queryParameters['name'] ?? parsed.queryParameters['mid'];
     return name != null ? '$name · ${parsed.host}' : parsed.host;
   }
 }

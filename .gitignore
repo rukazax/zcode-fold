@@ -20,3 +20,6 @@ bridge-qr.png
 
 tools/serve.log
 tools/bridge-fs.token
+
+# runtime logs
+tools/serve*.log
